@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# Run once by init, from /etc/inittab, before anything else starts.
+#
+# Two rules shape this file, both from measurement rather than taste:
+#
+#  1. echo is an ash *builtin*, so it costs no fork and appears immediately.
+#     mount is a separate executable, so each call is a fork() plus an
+#     execve() of a 956 KiB static binary. On this machine that is not a
+#     rounding error: the kernel's own initramfs unpack ran at 26 KiB/s
+#     (1,004,032 bytes between timestamps 7.72 and 45.34), because
+#     DTLB_ENTRIES is 2 and page-table walks dominate anything that touches
+#     many pages. Every fork+exec here costs seconds.
+#
+#  2. So mount only what a shell actually needs, and print before each one.
+#     Without the echoes a slow boot is indistinguishable from a hung one,
+#     which cost a debugging session: the machine was working the whole time
+#     and simply had not reached the prompt yet.
+#
+# /proc is the only mount that earns its fork: free, ps, top and uptime all
+# read it, and so does the hostname write below.
+#
+# Deliberately NOT mounted here - run /etc/init.d/mountall from the shell if
+# you want them:
+#   /dev   devtmpfs would add urandom, zero and friends, but the cpio already
+#          ships console, null, tty and ttyS0, which is all a shell opens.
+#   /sys   nothing in this applet set reads it.
+#   /tmp   the rootfs is a writable ramfs already, so /tmp works as a plain
+#          directory; a tmpfs over it buys nothing here.
+
+echo "rcS: mounting /proc" > /dev/kmsg
+mount -t proc proc /proc
+
+echo "rcS: setting hostname" > /dev/kmsg
+# A shell redirect, not the hostname applet: the BusyBox fragment turns that
+# off with the rest of the networking group, and this is the same syscall by a
+# path that costs no fork.
+echo custom-riscv > /proc/sys/kernel/hostname
+
+echo "rcS: done, starting shell" > /dev/kmsg

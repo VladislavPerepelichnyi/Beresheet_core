@@ -1,0 +1,7 @@
+#!/bin/sh
+# The mounts rcS skips to reach a prompt sooner. Run by hand when wanted.
+# Each line is a fork plus an exec of a 956 KiB binary, so expect seconds each.
+echo "mounting /dev (devtmpfs)" ; mount -t devtmpfs devtmpfs /dev
+echo "mounting /sys"            ; mount -t sysfs sysfs /sys
+echo "mounting /tmp"            ; mount -t tmpfs -o size=512k,mode=1777 tmpfs /tmp
+echo "done:" ; mount

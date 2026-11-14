@@ -1,0 +1,84 @@
+```
+output/host/bin/riscv32-buildroot-linux-gnu-objdump -d -M numeric,no-aliases output/build/linux-6.9/vmlinux | grep -E '^[[:space:]]*[0-9a-f]+:' | awk '{print $3}' | sort | uniq -c | sort -nr > platypus_isa_requirements.txt
+
+```
+linux instructions :
+```
+240379 addi
+ 156080 lw
+ 112096 sw
+  63076 jal
+  34307 jalr
+  33187 beq
+  25097 bne
+  24840 lui
+  14174 add
+  13031 auipc
+  11862 andi
+   9351 slli
+   6458 lbu
+   5967 srli
+   5196 sub
+   5065 or
+   4658 bgeu
+   4603 xor
+   4581 bltu
+   3441 bge
+   3396 blt
+   3189 sb
+   3067 and
+   2642 sltu
+   2535 lhu
+   2420 ebreak
+   2027 mul
+   1465 ori
+   1377 sh
+   1209 csrrs
+   1193 csrrci
+   1107 srai
+    890 sll
+    810 amoadd.w
+    758 sltiu
+    688 xori
+    516 csrrsi
+    452 srl
+    409 divu
+    383 mulhu
+    372 amoor.w
+    272 amoand.w
+    267 div
+    262 csrrc
+    233 amoadd.w.aqrl
+    196 lr.w
+    180 lh
+    144 remu
+    139 sc.w.rl
+    130 lb
+    130 fence
+     60 amoor.w.aq
+     58 sc.w
+     56 pause
+     56 amoor.w.aqrl
+     54 amoswap.w.aqrl
+     53 rem
+     52 sra
+     48 amoand.w.aqrl
+     41 slt
+     34 csrrw
+     30 mulh
+     25 sfence.vma
+     14 slti
+      8 amoand.w.rl
+      7 fence.i
+      6 amoswap.w
+      4 mulhsu
+      4 amoxor.w.rl
+      3 wfi
+      2 csrrwi
+      1 sret
+      1 sc.w.aqrl
+      1 lr.w.aqrl
+      1 ecall
+      1 amoxor.w.aqrl
+      1 amoxor.w
+```
