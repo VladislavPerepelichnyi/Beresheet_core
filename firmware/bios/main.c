@@ -1184,7 +1184,18 @@ static void sd_probe(void)
     uart_puts("\nSD card\n");
 
     uart_puts("  init        ");
-    if (sd_init() != 0) {
+    // Custom : Try N times to init 
+    const int N = 10;
+    unsigned char not_error = 0;
+    for(int i = 0 ; i < N ; i++) {
+        //Try first time to init 
+        if(!sd_init()) {
+            not_error = 1;
+            break ;
+        }
+    }
+    // Try to init the SD card again if there is were not sucseed attemp
+    if (sd_init() != 0 && !not_error) {
         uart_puts("skipped: ");
         uart_puts(sd_error_text());
         uart_puts("  (status 0x");
