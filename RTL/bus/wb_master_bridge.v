@@ -9,9 +9,11 @@
 // req -> STB/CYC, addr/wdata/wstrb/we -> ADR/DAT/SEL/WE, ACK -> ready.
 //
 // ERR also completes the access (read data forced to zero) and sets a sticky
-// bus_error flag. While `lock` is asserted CYC and LOCK stay high between the
-// two transfers of an RV32A read-modify-write (spec 3.4, RMW cycle), so the
-// arbiter cannot hand the bus to another master in between.
+// bus_error flag. `lock` is asserted with the read half of an RV32A
+// read-modify-write and drives CYC and LOCK; CYC may drop before the write
+// half. Indivisibility comes from the arbiter, which keeps the grant after a
+// locked response. With the D-cache present only atomics to uncached
+// addresses reach this bridge with LOCK set.
 // =============================================================================
 module wb_master_bridge (
     input  wire clk,

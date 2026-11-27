@@ -10,11 +10,14 @@
 //
 // The grant is chosen combinationally on the first cycle of a transfer and
 // latched until its ACK/ERR, so the bus is stable from STB to the response
-// as the spec requires. Releasing on the response rather than on CYC matters
-// because the fetch port holds CYC continuously. While m0 asserts LOCK the
-// grant survives the response, keeping both halves of an RV32A
-// read-modify-write indivisible (spec 2.2.3, LOCK_O). Each re-arbitration
-// costs one idle bus cycle.
+// as the spec requires. The grant is released on the response rather than on
+// CYC, so a master that keeps CYC high across back-to-back transfers (an
+// I-cache line fill) can still be interrupted between words. A new transfer
+// may start in the cycle after an ACK; there is no idle cycle.
+//
+// While m0 asserts LOCK at the response, the grant is held for m0's next
+// transfer even if CYC drops in between. This is what keeps the read and the
+// write of an RV32A read-modify-write indivisible (spec 2.2.3, LOCK_O).
 // =============================================================================
 module wb_arbiter (
     input  wire clk,

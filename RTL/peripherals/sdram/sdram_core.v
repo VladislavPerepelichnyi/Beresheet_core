@@ -233,7 +233,7 @@ always @(posedge clk) begin
         {WRITE, T_RCD+4'd1}: begin
             dq_oen <= 1'b1;
         end
-        {WRITE, T_RCD+T_WR+T_RP}: begin  // 2+2+1
+        {WRITE, T_RCD+T_WR+T_RP}: begin
             busy <= 0;
             state <= IDLE;
         end
