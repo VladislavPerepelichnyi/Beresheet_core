@@ -92,9 +92,19 @@ print(t[i:j].rstrip() if i>=0 else 'no resource report')"
 
 # --- Programming --------------------------------------------------------------
 # load writes the FPGA's configuration SRAM (lost at power-off); flash writes
-# the on-board flash. Both rebuild the bitstream first if it is stale.
-load: $(BITSTREAM)
-	$(LOADER) -b $(LOADER_BOARD) $(BITSTREAM)
+# the on-board flash. With FS=<file.fs> they program that bitstream, such as a
+# release download, and need no Gowin tools; otherwise they program the one
+# from make synth, rebuilding it first if it is stale.
+FS ?=
+ifneq ($(FS),)
+ifeq ($(wildcard $(FS)),)
+$(error FS=$(FS): no such file)
+endif
+endif
+PROGRAM_FS := $(if $(FS),$(FS),$(BITSTREAM))
 
-flash: $(BITSTREAM)
-	$(LOADER) -b $(LOADER_BOARD) -f $(BITSTREAM)
+load: $(if $(FS),,$(BITSTREAM))
+	$(LOADER) -b $(LOADER_BOARD) $(PROGRAM_FS)
+
+flash: $(if $(FS),,$(BITSTREAM))
+	$(LOADER) -b $(LOADER_BOARD) -f $(PROGRAM_FS)

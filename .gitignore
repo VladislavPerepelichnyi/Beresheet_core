@@ -2,3 +2,5 @@ build/
 schematics/
 *.tar.gz
 *.tar
+compiled_binaries/
+FPGA_prebuild/

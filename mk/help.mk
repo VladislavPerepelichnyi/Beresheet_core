@@ -36,8 +36,8 @@ Simulation
 Hardware  ($(FPGA))
   synth                              synthesis and place and route -> build/fpga/impl/pnr/$(GOWIN_OUTPUT).fs
   synth-report                       resource use and timing margin at the real clock
-  load                               program the FPGA SRAM (lost at power-off)
-  flash                              program the on-board flash (persistent)
+  load [FS=<file.fs>]                program the FPGA SRAM (lost at power-off)
+  flash [FS=<file.fs>]               program the on-board flash (persistent)
   console                            interactive serial console on PORT (alias: monitor)
 
 Tools
@@ -62,6 +62,7 @@ help:
 	@printf '%s\n' "$$HELP_TEXT"
 	@$(call help-var,FPGA,board: $(BOARDS))
 	@$(call help-var,BIOS_BR,synth: this ELF/bin in boot RAM instead of the BIOS)
+	@$(call help-var,FS,load / flash: this bitstream instead of the synth output)
 	@$(call help-var,INCL_PER,peripherals: $(PERIPHERALS_KNOWN) - none implemented yet)
 	@$(call help-var,BIN,program for sim / fast_sim / qemu / disassembler)
 	@$(call help-var,SRC,sources for compile-bin)

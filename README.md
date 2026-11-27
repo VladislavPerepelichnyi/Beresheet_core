@@ -121,6 +121,74 @@ make linux-kernel linux-rootfs dtb compile-openSBI   # Image, initramfs, DTB, fw
 make sdcard                                          # build/sdcard/: BOOT.TXT and the images
 ```
 
+## Quick start with the release binaries
+
+The [releases page](https://github.com/VladislavPerepelichnyi/Beresheet_core/releases) has a
+prebuilt Linux boot set and a Tang Nano 20K bitstream, so you can boot Linux without
+Buildroot or the Gowin tools. After installing the packages above:
+
+```sh
+git clone https://github.com/VladislavPerepelichnyi/Beresheet_core.git && cd Beresheet_core
+# download compiled_Beresheet.tar from the latest release into this directory, then:
+tar xf compiled_Beresheet.tar
+```
+
+| Path in the archive | Contents |
+|---|---|
+| `compiled_binaries/` | the SD card boot set: `BOOT.TXT`, `fw_dynamic.bin` (OpenSBI), `Image` (Linux), `custom.dtb` (device tree), `rootfs.gz` (BusyBox initramfs), `MANIFEST.md5` |
+| `FPGA_prebuild/tangnano20k/beresheet.fs` | bitstream with the BIOS in boot RAM |
+
+### Boot Linux in the simulator
+
+```sh
+make fast_sim BIN=compiled_binaries/BOOT.TXT
+```
+
+The first run builds the simulator with Verilator (about a minute). Your terminal is then
+the console: the kernel log appears at once and the shell prompt after about 35 seconds.
+Press **Ctrl-A x** to quit.
+
+### Boot Linux on the board
+
+**1. Prepare the SD card.** The BIOS reads a FAT32 file system on a card with an MBR
+(DOS) partition table, from an SD version 2 or SDHC card. Find the card's device with
+`lsblk` and check its size: everything on it is erased. It is `/dev/sdX` in a USB reader
+(partition `/dev/sdX1`) and `/dev/mmcblk0` in a built-in slot (partition `/dev/mmcblk0p1`).
+
+```sh
+lsblk                                                   # find the card
+sudo umount /dev/sdX?*                                  # if the desktop mounted it
+printf 'label: dos\nstart=2048, type=c\n' | sudo sfdisk /dev/sdX   # MBR, one FAT32 (LBA) partition
+sudo mkfs.vfat -F 32 -n BOOT /dev/sdX1                  # FAT32 file system
+```
+
+**2. Copy the boot set** to the root of the partition and check it:
+
+```sh
+sudo mount /dev/sdX1 /mnt
+sudo cp compiled_binaries/* /mnt/
+(cd /mnt && md5sum -c "$OLDPWD/compiled_binaries/MANIFEST.md5")   # every line must say OK
+sudo umount /mnt
+```
+
+A card you prepared once only needs step 2 for new images. With images you built yourself,
+`make sdcard` stages them in `build/sdcard/` and `make sdcard-verify SD=/mnt` does the check.
+
+**3. Program the FPGA and open the console.** Insert the card, connect the board by USB, and:
+
+```sh
+make load  FS=FPGA_prebuild/tangnano20k/beresheet.fs   # FPGA SRAM: until power-off
+make flash FS=FPGA_prebuild/tangnano20k/beresheet.fs   # or on-board flash: kept across power cycles
+make console                                           # PORT=/dev/ttyUSB1, 38400 baud
+```
+
+The BIOS tests the SDRAM, reads `BOOT.TXT`, loads the images and starts OpenSBI, which
+starts Linux; each step reports on the console. Press the board's reset button to reboot.
+Open the console after programming: the USB adapter is reset while the FPGA is programmed,
+which can leave a terminal opened earlier at the wrong speed. `FS=` takes any `.fs` file; without it, `load` and `flash` program
+the bitstream from `make synth`. The serial port needs your user in the `dialout` group
+(`uucp` on Arch), and programming over USB may need the openFPGALoader udev rules.
+
 ## Using it
 
 Run `make` (or `make help`) for the full menu with the current value of every variable.
@@ -166,19 +234,20 @@ is its exit status in both simulators.
 
 ```sh
 make synth                      # bitstream: build/fpga/impl/pnr/beresheet.fs
-make load                       # program the FPGA SRAM (lost at power-off)
-make flash                      # program the on-board flash
+make load  [FS=<file.fs>]       # program the FPGA SRAM (lost at power-off)
+make flash [FS=<file.fs>]       # program the on-board flash
 make console                    # serial console, PORT=/dev/ttyUSB1 BAUD=38400
 ```
 
 | Variable | Meaning |
 |---|---|
 | `FPGA=tangnano20k` | Target board, from `mk/boards/`. The Tang Mega 138K Pro is reserved and not supported yet. |
+| `FS=<file.fs>` | Bitstream for `load` and `flash`, such as the release download. Without it they program the output of `make synth`, rebuilding it first if it is stale. |
 | `BIOS_BR=<elf or bin>` | Put this program in boot RAM instead of the BIOS (hard-wired firmware). It must fit in 32 KB at `0x0`. |
 | `INCL_PER=ethernet,hdmi,usb,pcie` | Optional peripherals. Address slots are reserved (`0x1300_0000` to `0x1600_0000`), none is implemented yet, and requesting one stops the build with a clear message. |
 
-To boot Linux on the board, copy the files in `build/sdcard/` to a FAT32 SD card, insert it,
-and open the console. The BIOS reads `BOOT.TXT`, loads the images and hands off to OpenSBI.
+To boot your own Linux build on the board, prepare the card as in the
+[quick start](#boot-linux-on-the-board) and copy the files from `build/sdcard/` instead.
 
 ### Tools
 
