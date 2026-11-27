@@ -1,36 +1,29 @@
 // =============================================================================
-// An SD card in SPI mode, enough of one to boot from.
+// Behavioural SD card in SPI mode, simulation only.
 //
-// Simulation only. It exists because the alternative is bringing up an SPI
-// bus, a card protocol, and a filesystem parser at the same time on hardware
-// with no visibility into any of them. Here the card is deterministic and the
-// image is known, so a wrong byte is attributable.
+// Implements the subset of commands a boot loader uses:
 //
-// What it implements, which is the subset a boot loader uses:
+//   CMD0   GO_IDLE_STATE      R1 = idle
+//   CMD8   SEND_IF_COND       R7, voltage range and check pattern echoed
+//   CMD55  APP_CMD            R1; marks the next command as an ACMD
+//   ACMD41 SD_SEND_OP_COND    R1, busy for ACMD41_TRIES calls, then ready
+//   CMD58  READ_OCR           R3 with CCS set (high capacity, block addressed)
+//   CMD16  SET_BLOCKLEN       R1 (blocks are always 512 bytes)
+//   CMD17  READ_SINGLE_BLOCK  R1, then token 0xFE, 512 data bytes, 2 CRC bytes
 //
-//   CMD0   GO_IDLE_STATE     -> R1 = idle
-//   CMD8   SEND_IF_COND      -> R7, echoing the check pattern back
-//   CMD55  APP_CMD           -> R1, and arms the next command as an ACMD
-//   CMD41  SD_SEND_OP_COND   -> R1, idle for the first few calls and then
-//                               ready, so the host's polling loop is exercised
-//                               rather than satisfied on the first try
-//   CMD58  READ_OCR          -> R3 with CCS set: a high-capacity card, so the
-//                               host must address it in blocks
-//   CMD17  READ_SINGLE_BLOCK -> R1, then the 0xFE token and 512 bytes
+// Any other command is answered "illegal command". The image is sparse: the
+// LBA file lists the sectors present and the data file holds their contents;
+// any other sector reads as zeroes. Command CRCs are not checked.
 //
-// Anything else answers "illegal command", which is what a real card does and
-// what the controller's error path expects.
-//
-// The image is sparse: the two hex files list only the sectors that are not
-// all zeroes, which for a freshly made FAT32 volume is about ten of them. Any
-// sector not in the list reads back as zeroes, exactly as a blank card would.
+// Plusargs: +sd_lba=<file> and +sd_dat=<file> override LBA_FILE/DAT_FILE;
+// +nosdcard holds MISO high, as an empty socket does.
 // =============================================================================
 `timescale 1ns/1ps
 
 module sd_model #(
     parameter SD_SECTORS = 64,          // sparse image capacity, in sectors
-    parameter LBA_FILE   = "build/sd/sd_lba.hex",
-    parameter DAT_FILE   = "build/sd/sd_dat.hex",
+    parameter [8*256-1:0] LBA_FILE = "build/sd/sd_lba.hex",
+    parameter [8*256-1:0] DAT_FILE = "build/sd/sd_dat.hex",
     parameter ACMD41_TRIES = 3          // times to answer "still busy"
 )(
     input  wire clk,                    // the SoC clock, used only to sample
@@ -43,21 +36,23 @@ module sd_model #(
     reg [31:0] lba_tab [0:SD_SECTORS-1];
     reg [7:0]  dat_tab [0:SD_SECTORS*512-1];
 
+    reg [8*256-1:0] lba_file, dat_file;
     integer i;
     initial begin
         for (i = 0; i < SD_SECTORS; i = i + 1)
             lba_tab[i] = 32'hFFFF_FFFF;
         for (i = 0; i < SD_SECTORS*512; i = i + 1)
             dat_tab[i] = 8'h00;
-        $readmemh(LBA_FILE, lba_tab);
-        $readmemh(DAT_FILE, dat_tab);
+        if (!$value$plusargs("sd_lba=%s", lba_file)) lba_file = LBA_FILE;
+        if (!$value$plusargs("sd_dat=%s", dat_file)) dat_file = DAT_FILE;
+        $readmemh(lba_file, lba_tab);
+        $readmemh(dat_file, dat_tab);
     end
 
     // ------------------------------------------------------------------------
-    // Bit framing. SPI mode 0: the host samples on the rising edge, so the card
-    // must present a bit on the falling edge and hold it. Both edges are found
-    // by sampling with the system clock rather than by clocking logic on sck -
-    // there is only one clock in this model and no gated-clock trouble with it.
+    // Bit framing, SPI mode 0: MOSI is sampled on the rising edge of sck and
+    // MISO changes on the falling edge. Both edges are detected by sampling
+    // sck with the system clock.
     // ------------------------------------------------------------------------
     reg       sck_d;
     reg [2:0] bitcnt;
@@ -68,10 +63,7 @@ module sd_model #(
     wire sck_rise = sck & ~sck_d;
     wire sck_fall = ~sck & sck_d;
 
-    // +nosdcard makes the model deaf: MISO stays high, which is exactly what an
-    // empty socket looks like on a board with no card-detect pin. The driver
-    // must then fall out on the controller's watchdog rather than spin, and
-    // that is a property worth being able to test on demand.
+    // +nosdcard: MISO stays high, as with an empty socket and no card-detect
     reg absent;
     initial absent = $test$plusargs("nosdcard");
 
@@ -91,8 +83,8 @@ module sd_model #(
     reg [7:0]  acmd41_left;
 
     // ------------------------------------------------------------------------
-    // Response transmission. A response is at most five bytes (R3 and R7), and
-    // a read adds a token, 512 bytes and a two-byte CRC after it.
+    // Response transmission: up to five bytes (R3, R7), followed for a read by
+    // a token, 512 data bytes and a two-byte CRC.
     // ------------------------------------------------------------------------
     localparam TX_IDLE = 3'd0, TX_NCR = 3'd1, TX_RESP = 3'd2,
                TX_WAIT = 3'd3, TX_TOKEN = 3'd4, TX_DATA = 3'd5, TX_CRC = 3'd6;
@@ -127,8 +119,8 @@ module sd_model #(
         rx_stb <= 1'b0;
 
         if (cs_n) begin
-            // Deselected: the framing restarts from a byte boundary. A partial
-            // byte is dropped, which is what a real card does too.
+            // Deselected: framing restarts on a byte boundary; a partial byte
+            // is dropped.
             bitcnt <= 3'd0;
             txsr   <= 8'hFF;
         end else begin
@@ -152,9 +144,7 @@ module sd_model #(
         end
 
         // --------------------------------------------------------------------
-        // Command decode. Six bytes: 0x40|cmd, then the argument, then a CRC
-        // this model does not check - the controller computes a correct one and
-        // checking it here would only duplicate its own formal proof.
+        // Command decode: 0x40|cmd, four argument bytes, CRC (not checked)
         // --------------------------------------------------------------------
         if (rx_stb) begin
             case (rx_state)
@@ -204,9 +194,8 @@ module sd_model #(
                         end
                     end
             TX_WAIT: begin
-                        // The card is fetching the block. Real ones take a
-                        // while; a couple of byte times is enough to prove the
-                        // host waits for the token rather than assuming it.
+                        // Read access time: a few 0xFF bytes before the token,
+                        // so the host must wait for it
                         next_byte <= 8'hFF;
                         if (ncr == 3'd0)
                             tx_state <= TX_TOKEN;
@@ -228,8 +217,7 @@ module sd_model #(
                         end
                     end
             TX_CRC: begin
-                        // The controller is configured not to check the data
-                        // CRC, so any two bytes will do.
+                        // Data CRC is not checked by the host controller
                         next_byte <= 8'hFF;
                         crc_cnt   <= crc_cnt + 2'd1;
                         if (crc_cnt == 2'd1)
@@ -241,8 +229,7 @@ module sd_model #(
     end
 
     // ------------------------------------------------------------------------
-    // What each command answers. R1's bit 0 is "in idle state"; bit 2 is
-    // "illegal command". Nothing else is ever set, because nothing here fails.
+    // Command responses. R1 bit 0 = in idle state, bit 2 = illegal command.
     // ------------------------------------------------------------------------
     task do_command;
         reg [7:0] r1;
@@ -301,7 +288,7 @@ module sd_model #(
             default: resp[0] = 8'h04;         // illegal command
             endcase
 
-            // CMD55 arms the next command, and only the next one.
+            // CMD55 applies to the next command only
             app_cmd  = (cmd == 6'd55);
 
             resp_idx <= 3'd0;

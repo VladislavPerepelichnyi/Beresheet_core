@@ -35,7 +35,7 @@ module uart_wb_slave (
     output wire [`WB_DATA_WIDTH-1:0] wb_dat_o,
     output wire                      wb_ack_o,
 
-    output wire                      irq,        // unused until Zicsr; poll LSR
+    output wire                      irq,        // level, to PLIC source 1
     output wire                      uart_tx,
     input  wire                      uart_rx
 );

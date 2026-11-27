@@ -1,18 +1,13 @@
 // =============================================================================
-// Behavioural model of the GW2AR-18 embedded SDRAM (64 Mbit, 32-bit wide).
+// Behavioural model of the GW2AR-18 in-package SDRAM (64 Mbit, 32-bit wide,
+// 2K rows x 256 columns x 4 banks), simulation only.
 //
-// Organisation: 2K rows x 256 columns x 4 banks x 32 bits = 8 MB.
-//
-// This exists to validate the controller, and specifically the masked word
-// write added in sdram_core.v. It decodes commands the way a real part does and
-// complains loudly about protocol violations rather than quietly tolerating
-// them, so a mistake in the controller shows up here instead of on the board.
-//
-// Checked: mode register set before any access, row activated before a
-// read/write to that bank, CAS latency honoured, DQM masking on writes, auto
-// precharge, and refresh interval. Not modelled: absolute ns timings (the
-// controller's parameters handle those), power-up sequencing beyond the mode
-// register, or burst lengths other than 1.
+// Decodes commands as the device does and reports protocol violations through
+// `errors` instead of tolerating them. Checked: mode register set before any
+// access, an active row before read/write, CAS latency, DQM write masking,
+// auto-precharge and the refresh interval. Not modelled: absolute timing in
+// ns, the power-up sequence beyond the mode register, burst lengths above 1.
+// The flat array index is {bank, row, column}, which tb_soc uses to preload.
 // =============================================================================
 `timescale 1ns / 1ps
 
@@ -21,8 +16,8 @@ module sdram_model #(
     parameter COL_WIDTH  = 8,
     parameter BANK_WIDTH = 2,
     parameter CAS_LATENCY = 2,
-    // Refresh watchdog. The real part needs 4096 refreshes per 64 ms; a row
-    // left un-refreshed longer than this would decay on hardware.
+    // Refresh watchdog: report when no refresh is seen for 8x the nominal
+    // per-row interval (64 ms / 4096)
     parameter REFRESH_LIMIT_NS = 64_000_000 / 4096 * 8
 )(
     inout  wire [31:0] SDRAM_DQ,
@@ -50,7 +45,7 @@ module sdram_model #(
     localparam CMD_ACTIVATE  = 3'b011;
     localparam CMD_WRITE     = 3'b100;
     localparam CMD_READ      = 3'b101;
-    // Handled by the default arm below; listed for completeness of the encoding.
+    // Handled by the default arm; listed to complete the encoding
     /* verilator lint_off UNUSEDPARAM */
     localparam CMD_BURST_END = 3'b110;
     localparam CMD_NOP       = 3'b111;
@@ -77,9 +72,7 @@ module sdram_model #(
 
     wire [2:0] cmd = {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE};
 
-    // Bank, row and column are disjoint fields of the word index, so a
-    // concatenation says exactly what the arithmetic said and is the right width
-    // by construction.
+    // Word index of {bank, row, column}
     function [IDX_WIDTH-1:0] flat_addr(input [BANK_WIDTH-1:0] b,
                                        input [ROW_WIDTH-1:0]  r,
                                        input [COL_WIDTH-1:0]  c);
@@ -143,9 +136,8 @@ module sdram_model #(
                 end
 
                 CMD_REFRESH: begin
-                    // The JEDEC power-up sequence is precharge-all, then two or
-                    // more auto refreshes, then the mode register set, so a
-                    // refresh before configuration is correct here.
+                    // Legal before the mode register set: JEDEC power-up is
+                    // precharge-all, two or more refreshes, then mode set
                     for (i = 0; i < BANKS; i = i + 1)
                         if (row_active[i]) complain("REFRESH with a row still open");
                     refreshes       = refreshes + 1;

@@ -1,20 +1,12 @@
 `include "wb_defines.vh"
 
 // =============================================================================
-// Wishbone slave wrapping a block RAM. Used as the boot memory holding the
-// BIOS, and as a stand-in for SDRAM in simulation.
+// Wishbone slave wrapping a byte-writable block RAM; used as the boot memory.
 //
-// Single cycle: ACK is asserted on the same edge the data appears, so a hit
-// costs the master nothing beyond the bus handshake itself. That means ACK must
-// be registered off STB, and read data must be registered from the same edge,
-// so the two line up.
-//
-// Byte strobes come straight from SEL, so byte and halfword stores work without
-// a read-modify-write.
-//
-// INIT_FILE is a word-oriented image, one 32-bit hex value per line, produced by
-// scripts/bin_to_wordhex.py. That form is what lets the same module be both the
-// simulation memory and a synthesis-initialised block RAM holding the BIOS.
+// ACK and read data are registered on the same edge, one cycle after STB.
+// Byte lanes are written directly from SEL. INIT_FILE is a word-oriented hex
+// image (one 32-bit word per line, scripts/bin_to_wordhex.py), so the same
+// file initialises the simulation memory and the synthesised block RAM.
 // =============================================================================
 module wb_ram #(
     parameter MEM_BYTES = `BOOT_RAM_BYTES,
@@ -36,23 +28,18 @@ module wb_ram #(
     localparam WORDS     = MEM_BYTES / 4;
     localparam IDX_WIDTH = $clog2(WORDS);
 
-    // One 32-bit array with byte-slice writes. Gowin, Vivado and Verilator all
-    // infer a byte-write-enabled block RAM from this shape, and it can be
-    // initialised from a single word-oriented $readmemh image - which four
-    // separate byte-lane arrays cannot.
+    // A single word array with byte-slice writes, the form that synthesis
+    // tools (Gowin, Vivado) infer as byte-enabled block RAM.
     reg [31:0] mem [0:WORDS-1];
 
     wire [IDX_WIDTH-1:0] idx = wb_adr_i[IDX_WIDTH+1:2];
 
-    // One access per ACK: withholding sel while ACK is high guarantees a single
-    // response per strobe even when a master holds STB continuously, as the
-    // instruction fetch port does.
+    // Masking with ACK gives one response per STB even when a master holds
+    // STB across consecutive transfers.
     wire sel = wb_stb_i & wb_cyc_i & ~wb_ack_o;
 
-    // $readmemh is the only initialiser, and the image is padded to the full
-    // depth by scripts/bin_to_wordhex.py. An explicit zeroing loop would be
-    // nicer to read but synthesis will not unroll it: Gowin caps loops at 2000
-    // iterations and this memory is 8192 words deep.
+    // $readmemh only: the image is padded to full depth, and synthesis tools
+    // will not unroll a zeroing loop this long.
     initial begin
         if (INIT_FILE != "")
             $readmemh(INIT_FILE, mem);
@@ -73,11 +60,15 @@ module wb_ram #(
                     if (wb_sel_i[2]) mem[idx][23:16] <= wb_dat_i[23:16];
                     if (wb_sel_i[3]) mem[idx][31:24] <= wb_dat_i[31:24];
                 end
-                // Read-first: a write returns the old contents, which the
-                // master ignores. Keeps this inferrable as a block RAM.
+                // Read-first; a write returns the old word, which is ignored
                 wb_dat_o <= mem[idx];
             end
         end
     end
+
+    // The region is decoded upstream; bits 1:0 are always zero
+    /* verilator lint_off UNUSEDSIGNAL */
+    wire unused_adr = |{wb_adr_i[`WB_ADDR_WIDTH-1:IDX_WIDTH+2], wb_adr_i[1:0]};
+    /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule

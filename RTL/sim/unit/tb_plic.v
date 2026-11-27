@@ -1,26 +1,14 @@
 `include "wb_defines.vh"
 
 // =============================================================================
-// Unit testbench for plic_wb.
+// Unit testbench for plic_wb, driven directly on its Wishbone port.
 //
-// The software test in tests/rv32i/11_plic.S covers everything a driver can
-// reach. This one exists for what it cannot: properties that live in a single
-// clock cycle. Over the bus, a load takes several cycles and the program has no
-// way to place an event inside a chosen one, so an entire class of bug is
-// invisible from software however many checks you write.
-//
-// The property at issue is claim atomicity. A claim returns a source ID and
-// clears that source's pending bit, and they must be the same source. If the
-// returned value came from a register while the clear used live logic, the two
-// would disagree whenever a higher-priority source became pending in exactly
-// the cycle between - the claim would report source A while clearing source B,
-// and the handler would service A and complete A, leaving B pending with its
-// gateway open and no interrupt outstanding. A device that had asserted would
-// simply never be serviced, occasionally, under load.
-//
-// Driving the PLIC directly makes that cycle reachable: the test sweeps the
-// phase between raising a higher-priority source and issuing a claim, so one
-// pass of the sweep lands in the window.
+// Covers register access, eip against threshold, and claim atomicity: a claim
+// must return a source ID and clear that same source's pending bit even when a
+// higher-priority source becomes pending in the claim cycle. That window is a
+// single clock cycle and cannot be targeted from software, so the test sweeps
+// the offset between raising the higher-priority source and the claim, and
+// checks every claim against a snapshot taken when it was decoded.
 // =============================================================================
 module tb_plic;
 
@@ -35,7 +23,7 @@ module tb_plic;
 
     reg clk = 1'b0;
     reg rst = 1'b1;
-    always #5 clk = ~clk;               // 100 MHz; the period is arbitrary here
+    always #5 clk = ~clk;
 
     reg [31:0] adr   = 32'd0;
     reg [31:0] dat_w = 32'd0;
@@ -72,16 +60,33 @@ module tb_plic;
     endtask
 
     // -----------------------------------------------------------------------
-    // Wishbone classic single cycle. Drive on the falling edge, sample on the
-    // next one: the slave latches at the rising edge in between, so nothing is
-    // sampled in the same instant it changes.
+    // Wishbone classic single transfer. Inputs change on the falling edge and
+    // are sampled by the slave on the rising edge. A slave that does not ACK
+    // within ACK_LIMIT cycles is a test failure.
     // -----------------------------------------------------------------------
+    localparam ACK_LIMIT = 16;
+    integer    wait_n;
+
+    task wb_wait_ack(input [31:0] a);
+        begin
+            wait_n = 0;
+            @(negedge clk);
+            while (!ack && wait_n < ACK_LIMIT) begin
+                @(negedge clk);
+                wait_n = wait_n + 1;
+            end
+            if (!ack) begin
+                $display("FAIL no ACK from address 0x%08h", a);
+                errors = errors + 1;
+            end
+        end
+    endtask
+
     task wb_write(input [31:0] a, input [31:0] d);
         begin
             @(negedge clk);
             adr = a; dat_w = d; we = 1'b1; stb = 1'b1; cyc = 1'b1;
-            @(negedge clk);
-            while (!ack) @(negedge clk);
+            wb_wait_ack(a);
             stb = 1'b0; cyc = 1'b0; we = 1'b0;
         end
     endtask
@@ -90,18 +95,16 @@ module tb_plic;
         begin
             @(negedge clk);
             adr = a; we = 1'b0; stb = 1'b1; cyc = 1'b1;
-            @(negedge clk);
-            while (!ack) @(negedge clk);
+            wb_wait_ack(a);
             q = dat_r;
             stb = 1'b0; cyc = 1'b0;
         end
     endtask
 
     // -----------------------------------------------------------------------
-    // The invariant, checked on every claim for the whole run.
-    //
-    // Latch the winner and the pending word as the claim is decoded; one cycle
-    // later, when the read data has landed, compare both against that snapshot.
+    // Claim invariant, checked on every claim: latch the winner and the
+    // pending word when the claim is decoded, then compare the returned ID and
+    // the bit that cleared against them one cycle later.
     // -----------------------------------------------------------------------
     reg                 claim_d    = 1'b0;
     reg [2:0]           claim_id   = 3'd0;
@@ -110,9 +113,8 @@ module tb_plic;
     integer             claims     = 0;
     integer             races      = 0;
 
-    // claim_d must be cleared by reset. Without that, a claim in the last cycle
-    // before a reset leaves it set, and the check then runs against a wiped
-    // device and reports a violation that never happened.
+    // Cleared by reset so a claim just before a reset is not checked against
+    // the reset device
     always @(posedge clk) begin
         if (rst) begin
             claim_d <= 1'b0;
@@ -136,9 +138,8 @@ module tb_plic;
                 end
             end
 
-            // A claim decoded in the same cycle the winner changed is the case
-            // the sweep is hunting for; count them so a sweep that never hits
-            // the window is visible rather than silently passing.
+            // A claim in the cycle the winner changed is the case the sweep
+            // targets; the test fails if it never occurs.
             if (dut.claim_now && (dut.best_id[0] !== winner_d))
                 races = races + 1;
 
@@ -192,12 +193,11 @@ module tb_plic;
         check_eq("eip masked by threshold", {31'd0, eip[0]}, 32'd0);
         wb_write(PLIC_THRESH_0, 32'd0);
 
-        // --- the phase sweep ---------------------------------------------
+        // --- phase sweep -------------------------------------------------
         //
-        // Source 2 is pending at priority 1. Source 3 has priority 5, so the
-        // moment it becomes pending it takes over as the winner. Raise it at
-        // every offset from the claim and check the claim stays self-consistent
-        // at each one; the invariant above does the checking.
+        // Source 2 is pending at priority 1; source 3 (priority 5) becomes the
+        // winner as soon as it is pending. Raise it d cycles before the claim
+        // for each d; the invariant above checks every claim.
         for (d = 0; d < 6; d = d + 1) begin
             do_reset;
             wb_write(PLIC_THRESH_0,     32'd0);
@@ -210,12 +210,10 @@ module tb_plic;
             wb_read(PLIC_PENDING, q);
             check_eq("source 2 pending", q, 32'h0000_0004);
 
-            src[3] = 1'b1;                  // the winner changes...
-            repeat (d) @(negedge clk);       // ...d cycles before the claim
+            src[3] = 1'b1;
+            repeat (d) @(negedge clk);
             wb_read(PLIC_CLAIM_0, q);
-            // The invariant checks the claim on the following cycle, so give it
-            // one before tearing the state down.
-            repeat (2) @(negedge clk);
+            repeat (2) @(negedge clk);      // let the invariant check run
             if (q !== 32'd2 && q !== 32'd3) begin
                 $display("FAIL sweep d=%0d: claim returned %0d", d, q);
                 errors = errors + 1;
@@ -224,7 +222,7 @@ module tb_plic;
         end
 
         if (races == 0) begin
-            $display("FAIL sweep never hit the race window - the test proves nothing");
+            $display("FAIL sweep never hit the race window");
             errors = errors + 1;
         end
 
@@ -235,12 +233,6 @@ module tb_plic;
         $display("----------------------------------------------------------------");
         if (errors == 0) $display("*** PLIC UNIT TEST PASSED ***");
         else             $display("*** PLIC UNIT TEST FAILED ***");
-        $finish;
-    end
-
-    initial begin
-        #200000;
-        $display("*** PLIC UNIT TEST TIMEOUT ***");
         $finish;
     end
 

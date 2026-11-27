@@ -1,33 +1,19 @@
 // =============================================================================
-// SDRAM controller for the Tang Nano 20K embedded 64 Mbit SDRAM.
+// SDRAM controller for the Tang Nano 20K in-package 64 Mbit SDRAM.
 //
-// DERIVED WORK. The original is by nand2mario and lives untouched at
-//   RTL/perepherical_reference/RAM_controller/sdram-tang-nano-20k/src/sdram.v
-// It is used in NESTang and is proven on this exact board. Diff against that
-// file to see exactly what changed.
+// Derived from nand2mario's sdram-tang-nano-20k controller
+// (https://github.com/nand2mario/sdram-tang-nano-20k, Apache License 2.0);
+// the original notice follows this header. Modifications:
 //
-// The one functional change: the write port is 32 bits wide with a byte mask,
-// instead of a single byte.
+//   * The write port is a 32-bit word with a byte mask (din32, wmask) driving
+//     DQ and DQM directly, instead of one byte replicated across the lanes.
+//     A word store is then one 5-cycle transaction instead of four.
+//   * The byte-wide read path (dout, off, dout_buf) is removed; reads return
+//     the full word on dout32.
 //
-//   original:  input [7:0] din;   DQM is derived from addr[1:0], and
-//              dq_out = {din,din,din,din} so exactly one byte is written.
-//   here:      input [31:0] din32; input [3:0] wmask;
-//              DQM = ~wmask, dq_out = din32.
-//
-// Why: a 32-bit store through the byte-only port needs four separate 5-cycle
-// transactions, 20 cycles. With a masked word write it is one transaction, 5
-// cycles. Since SDRAM_DQM is already four bits and already driven in the WRITE
-// state, this is a change of two assignments, not of the state machine or of
-// any SDRAM timing parameter.
-//
-// The byte-wide read path (dout, off, dout_buf) is also removed; the Wishbone
-// slave only ever wants the full word from dout32.
-//
-// Everything else - the init sequence, CAS/T_RC/T_RP/T_RCD/T_WR timing, the
-// auto-precharge behaviour, the 200 us power-on wait - is unchanged.
-//
-// Still required of the caller: pulse `refresh` at least once every 15 us, and
-// supply clk_sdram phase-shifted from clk.
+// Initialisation, CAS/T_RC/T_RP/T_RCD/T_WR timing and auto-precharge are
+// unchanged. The caller must pulse `refresh` at least every 15.6 us and supply
+// clk_sdram phase shifted from clk.
 // =============================================================================
 
 // Simple SDRAM controller for Tang 20k

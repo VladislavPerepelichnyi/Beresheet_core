@@ -1,28 +1,25 @@
-# uart16550 — local copy
+# uart16550
 
-Source: OpenCores `uart16550`, from
-`RTL/perepherical_reference/uart16550_latest/uart16550/trunk/rtl/verilog/`,
-which stays untouched so this copy can be diffed against it.
+Third-party UART from the OpenCores `uart16550` project
+(<https://opencores.org/projects/uart16550>), distributed under the GNU Lesser
+General Public License; see the notice at the top of each file. The files are
+kept as close to upstream as possible so that a diff shows only local changes.
 
-## Why a copy at all
+`uart_wb_slave.v` is not part of upstream: it is this project's wrapper that
+connects the core to the SoC bus and ties off the unused modem-control pins.
 
-One change is required: `uart_defines.v` now defines `LITLE_ENDIAN`.
+## Local change
+
+`uart_defines.v` defines `LITLE_ENDIAN` (upstream spelling).
 
 In 32-bit bus mode `uart_wb.v` derives the low two bits of the register index
-from *which byte lane* `SEL` selects. Without `LITLE_ENDIAN` it uses the
-big-endian mapping (`SEL=0001` → register offset 3), which reverses the register
-order as seen by a little-endian CPU. RISC-V is little-endian, so leaving this
-undefined puts every register at the wrong address.
+from the byte lane selected by `SEL`. Without `LITLE_ENDIAN` it uses the
+big-endian mapping (`SEL=0001` selects register offset 3), which reverses the
+register order seen by a little-endian CPU. With it defined, a byte access at
+`UART_BASE + N` reaches register `N`: the standard 16550 layout, `reg-shift = 0`
+and `reg-io-width = 1` in device-tree terms.
 
-With it defined, a byte access at `UART_BASE + N` reaches register `N` — the
-classic 16550 layout, `reg-shift = 0` in device-tree terms.
+## Configuration
 
-## Configuration in force
-
-`DATA_BUS_WIDTH_8` stays commented out, so the core is in 32-bit mode:
-`UART_ADDR_WIDTH = 5`, `UART_DATA_WIDTH = 32`.
-
-Verify with:
-
-    diff -r RTL/peripherals/uart16550 \
-            RTL/perepherical_reference/uart16550_latest/uart16550/trunk/rtl/verilog
+`DATA_BUS_WIDTH_8` is left undefined, so the core is built in 32-bit bus mode
+(`UART_ADDR_WIDTH = 5`, `UART_DATA_WIDTH = 32`).

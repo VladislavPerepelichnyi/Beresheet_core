@@ -1,14 +1,12 @@
 // =============================================================================
-// Unit testbench for the Sv32 MMU.
+// Unit testbench for the Sv32 MMU (data and fetch instances, shared tables).
 //
-// Almost nothing here can be reached from software yet: exercising SUM, MXR,
-// a misaligned megapage or a reserved PTE encoding needs page tables, a
-// privilege mode and a fault handler, and by the time all three exist the
-// machine is booting an OS and a wrong answer looks like a kernel bug.
-//
-// So the tables are built by hand and the answers checked directly. Each case
-// below is a rule from the privileged specification, and several of them are
-// rules the draft did not yet implement.
+// Page tables are built by hand in a local memory and each translation is
+// checked directly against the privileged specification: bare and M-mode
+// pass-through, two-level walks and megapages, R/W/X/U/A/D permissions, SUM,
+// MXR and MPRV, reserved and misaligned PTEs, SFENCE.VMA and ASIDs, fault
+// release when the address or mode changes under a held request, and walks
+// against a memory with latency.
 // =============================================================================
 `timescale 1ns/1ps
 `include "definitions.vh"
@@ -58,8 +56,7 @@ module tb_mmu;
     wire        i_ptw_re;
     wire [31:0] i_stat_hits, i_stat_misses, i_stat_faults;
 
-    // Shared memory port: zero latency here, and a slower variant is exercised
-    // at the end. The walker has to work against both.
+    // Page-table memory ports, with configurable latency (mem_lat)
     integer     mem_lat = 0;
     integer     d_lat = 0, i_lat = 0;
     reg         d_ptw_ready = 1'b0, i_ptw_ready = 1'b0;
@@ -234,7 +231,7 @@ module tb_mmu;
     endtask
 
     // Reset the tables to a known good mapping:
-    //   VA 0x0040_0000 (vpn1=1, vpn0=0) -> PA 0x8040_0000, RWX + U + A + D
+    //   VA 0x0040_0000 (vpn1=1, vpn0=0) -> PA 0x8040_0000, RWX + A + D
     //   VA 0x0040_1000 (vpn1=1, vpn0=1) -> PA 0x8040_1000, same
     task automatic build_tables;
         integer k;
@@ -242,9 +239,8 @@ module tb_mmu;
             for (k = 0; k < 4096; k = k + 1) mem[k] = 32'd0;
             // root[1] -> leaf table at PPN 2
             mem[(32'h1000 >> 2) + 1] = pte(22'd2, F_V);
-            // leaf[0] and leaf[1]. Supervisor pages: most of what is tested
-            // below runs in S-mode, and a user page would need SUM for every
-            // one of them.
+            // leaf[0] and leaf[1]: supervisor pages, since most cases run in
+            // S-mode
             mem[(32'h2000 >> 2) + 0] = pte(22'h80400, F_V|F_R|F_W|F_X|F_A|F_D);
             mem[(32'h2000 >> 2) + 1] = pte(22'h80401, F_V|F_R|F_W|F_X|F_A|F_D);
         end
@@ -416,24 +412,20 @@ module tb_mmu;
         dxlate(32'h0040_0000, 1'b0);
         want_fault(`CAUSE_LOAD_PAGE_FAULT, "invalid level-1 entry");
 
-        // R=0 W=1 is reserved at every level, including with X set - which is
-        // the case the draft's test let through as a leaf.
+        // R=0 W=1 is reserved at every level, including with X set
         build_tables;
         mem[(32'h2000 >> 2)] = pte(22'h80400, F_V|F_W|F_X|F_A|F_D);
         sfence;
         dxlate(32'h0040_0000, 1'b0);
         want_fault(`CAUSE_LOAD_PAGE_FAULT, "reserved R=0 W=1 X=1");
 
-        // The same encoding with MXR set. This is the one that matters: MXR
-        // makes an executable page readable, so the permission check would let
-        // this through and only the walk-time rejection of the reserved
-        // encoding can stop it. Without this case, a test that only checks
-        // "does it fault" cannot tell the two apart.
+        // With MXR the permission check alone would allow the load, so only
+        // the walk-time rejection of the reserved encoding can fault it
         d_mxr = 1'b1;
         sfence;
         dxlate(32'h0040_0000, 1'b0);
         want_fault(`CAUSE_LOAD_PAGE_FAULT, "reserved encoding, MXR set");
-        // ...and a store, where W=1 would otherwise be enough.
+        // ...and a store, where W=1 alone would otherwise permit it
         sfence;
         dxlate(32'h0040_0000, 1'b1);
         want_fault(`CAUSE_STORE_PAGE_FAULT, "reserved encoding, store");
@@ -461,10 +453,9 @@ module tb_mmu;
 
         // ------------------------------------------------------------------
         $display("\n-- a fault must not outlive translation --");
-        // The instruction side holds req_valid high forever, so a latched fault
-        // has nothing to clear it. The trap it raises switches to M-mode, where
-        // translation is off - and if the fault is still asserted there, every
-        // fetch in the handler faults too and the machine stops dead.
+        // The fetch side holds req_valid continuously. After the trap switches
+        // to M-mode (no translation) the fault must not persist, or every
+        // fetch in the trap handler would fault too.
         build_tables;
         mem[(32'h2000 >> 2)] = 32'd0;          // unmapped
         sfence;
@@ -474,8 +465,7 @@ module tb_mmu;
         d_priv = `M_MODE;
         ixlate(32'h0040_0000);
         want_pa(32'h0040_0000, "and M-mode passes straight through");
-        // Same for the data side, where the request does drop but the mode
-        // change can happen first.
+        // Same for the data side
         d_priv = `S_MODE;
         dxlate(32'h0040_0000, 1'b0);
         want_fault(`CAUSE_LOAD_PAGE_FAULT, "load faults in S-mode");
@@ -486,19 +476,15 @@ module tb_mmu;
 
         // ------------------------------------------------------------------
         $display("\n-- a fault belongs to one page, not to the MMU --");
-        // The instruction side never drops req_valid, so a latched fault has to
-        // be released by the *address* changing. Without that, the first fault
-        // in supervisor mode is the last walk this MMU ever does, and every
-        // later address reports the first one's fault. Linux hits this on its
-        // second instruction after enabling paging.
+        // With req_valid held, a latched fault must be released by a change of
+        // address, or every later address would report the first fault.
         build_tables;
         mem[(32'h2000 >> 2) + 1] = 32'd0;      // leave page 1 unmapped
         sfence;
         d_priv = `S_MODE;
         ixlate(32'h0040_1000);
         want_fault(`CAUSE_FETCH_PAGE_FAULT, "fetch faults on the unmapped page");
-        // Still in S-mode, still translating, request never dropped - a
-        // different page must be walked and must work.
+        // A different page must still be walked and translate
         ixlate(32'h0040_0000);
         want_pa(32'h8040_0000, "a different page still translates");
         ixlate(32'h0040_1000);
@@ -509,10 +495,9 @@ module tb_mmu;
         dxlate(32'h0040_0000, 1'b0);
         want_pa(32'h8040_0000, "and the good page still loads");
 
-        // The instruction side of the core never deasserts req_valid, so the
-        // address has to change *underneath a held request*. Doing it with the
-        // task above lets req_valid drop between accesses, which clears the
-        // fault by a different route and hides the bug entirely.
+        // The same with the address changing under a continuously held
+        // request, as the core's fetch side does (the tasks above drop
+        // req_valid between accesses, which clears the fault by another route)
         build_tables;
         mem[(32'h2000 >> 2) + 1] = 32'd0;
         sfence;
@@ -549,31 +534,25 @@ module tb_mmu;
         i_req = 1'b0;
         repeat (2) @(posedge clk);
 
-        // A fault is not final: the kernel handles it, populates the mapping,
-        // and returns to retry the same instruction. The retry must succeed.
-        //
-        // The request is dropped in between, because that is what the core does
-        // - a trap flushes the faulting instruction out of the pipeline. An
-        // earlier version of this test held it asserted across the fix, which
-        // is a sequence the machine never produces.
+        // After the OS maps the page, the retried access must succeed. The
+        // request drops in between, as the trap flushes the faulting
+        // instruction.
         build_tables;
         mem[(32'h2000 >> 2) + 1] = 32'd0;      // page 1 unmapped for now
         sfence;
         d_priv = `S_MODE;
         dxlate(32'h0040_1000, 1'b1);
         want_fault(`CAUSE_STORE_PAGE_FAULT, "store faults on the unmapped page");
-        // The handler populates it. No sfence: there was nothing cached to
-        // invalidate, and Linux does not fence when filling an absent entry.
+        // Populate it without SFENCE: an invalid entry is never cached
         mem[(32'h2000 >> 2) + 1] = pte(22'h80401, F_V|F_R|F_W|F_X|F_A|F_D);
         dxlate(32'h0040_1000, 1'b1);
         want_pa(32'h8040_1000, "and the retry now succeeds");
-        // Once resident, a remembered fault must never outrank the entry.
+        // A resident entry takes precedence over any remembered fault
         dxlate(32'h0040_1000, 1'b0);
         want_pa(32'h8040_1000, "the resident entry keeps working");
 
-        // And the same with the request never released, which is what the
-        // instruction side does - it holds req_valid high forever. A latched
-        // fault must not block the re-walk, or the page is lost permanently.
+        // The same with the fetch request held throughout: a latched fault
+        // must not block the re-walk once the page is mapped
         build_tables;
         mem[(32'h2000 >> 2) + 1] = 32'd0;
         sfence;
@@ -634,8 +613,7 @@ module tb_mmu;
         sfence;
         dxlate(32'h0040_0000, 1'b0);
         want_pa(32'h8040_0000, "mapped");
-        // Change the table under the TLB without an sfence: the stale entry is
-        // still used, which is correct - the OS must fence.
+        // Without SFENCE.VMA the stale entry remains in use, as permitted
         mem[(32'h2000 >> 2)] = pte(22'h80500, F_V|F_R|F_W|F_X|F_A|F_D);
         dxlate(32'h0040_0000, 1'b0);
         want_pa(32'h8040_0000, "stale entry survives without a fence");
@@ -672,8 +650,7 @@ module tb_mmu;
         $display("\n-- the TLB holds more than one entry --");
         mem_lat = 0;
         build_tables;
-        // Map eight leaf pages and touch them all, then re-touch: with 16
-        // entries none of them should have been evicted.
+        // Eight pages fit in a 16-entry TLB: the second pass must all hit
         for (idx = 0; idx < 8; idx = idx + 1)
             mem[(32'h2000 >> 2) + idx] =
                 pte(22'h80400 + idx[21:0], F_V|F_R|F_W|F_X|F_A|F_D);

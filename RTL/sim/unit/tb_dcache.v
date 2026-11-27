@@ -1,23 +1,13 @@
 // =============================================================================
-// Unit testbench for the VIPT data cache.
+// Unit testbench for cache_vipt, used as a data cache.
 //
-// Some of what a cache has to get right is invisible from software, for the
-// same reason the PLIC's claim atomicity was: the evidence is a cycle wide, or
-// it is a side effect that a correct-looking result hides.
-//
-//   * ready asserted exactly once per request. Serve a request twice and a
-//     store writes the array twice - which, being idempotent, changes nothing
-//     you can read back. The machine then runs one access behind forever.
-//   * an eviction putting the *right* line back. Write back the wrong tag and
-//     the data lands somewhere else in memory; every later read of the line you
-//     meant to save still hits in the cache and returns the correct value.
-//   * byte strobes surviving a fill. A cache that ignores them looks perfect
-//     until two bytes of one word are written by different instructions.
-//   * MMIO never being cached. A cached UART would simply drop characters.
-//
-// The memory model answers with a settable latency, because a cache that only
-// works against zero-latency memory is the same trap this project has already
-// hit twice.
+// Checks properties that software results can hide: ready asserted exactly
+// once per request, evictions writing the right line to the right address,
+// byte strobes surviving fills, uncacheable (MMIO) accesses always reaching
+// memory, both cacheable windows, flush write-back and invalidation including
+// a flush that arrives in the same cycle as a write hit. The memory model has
+// a settable latency so the cache is not tested against zero-latency memory
+// only.
 // =============================================================================
 `timescale 1ns/1ps
 `include "definitions.vh"
@@ -62,9 +52,7 @@ module tb_dcache;
         .WAY_NUM        (4),
         .CACHEABLE_BASE  (CACHEABLE_BASE),
         .CACHEABLE_SIZE  (CACHEABLE_SIZE),
-        // A second window, at the other end of the map, so the two-region
-        // decode is exercised rather than assumed. On the real SoC this is the
-        // boot block RAM.
+        // Second cacheable window, as the boot RAM is on the SoC
         .CACHEABLE2_BASE (32'h0000_0000),
         .CACHEABLE2_SIZE (32'h0000_8000)
     ) dut (
@@ -82,8 +70,8 @@ module tb_dcache;
     );
 
     // =========================================================================
-    // Memory model. Two disjoint spaces so a cacheable and an uncacheable
-    // address can never alias in the model and hide a bug in the decode.
+    // Memory model with separate arrays per space, so cacheable and
+    // uncacheable addresses cannot alias and hide a decode error.
     // =========================================================================
     reg [31:0] dram [0:16383];        // 64 KB at CACHEABLE_BASE
     reg [31:0] bram [0:8191];         // 32 KB at 0x0000_0000, the second window
@@ -144,10 +132,8 @@ module tb_dcache;
                                     : mmio[mmio_idx];
 
     // =========================================================================
-    // Structural invariant: ready may only be asserted while a request is
-    // outstanding. This is the one that catches a request being served twice -
-    // the second answer arrives after the CPU has moved on, and no amount of
-    // checking returned data can see it.
+    // Invariant: ready only while a request is outstanding. A request served
+    // twice shows up here as a second ready after the CPU has moved on.
     // =========================================================================
     reg outstanding = 1'b0;
     integer stray_ready = 0;
@@ -163,8 +149,9 @@ module tb_dcache;
     end
 
     // =========================================================================
-    // Access tasks. They mimic the core exactly: hold the request until ready
-    // is seen at a rising edge, then drop it on that same edge.
+    // Access tasks, matching the core: hold the request until ready is seen at
+    // a rising edge, then drop it. An access that is not answered within the
+    // guard is a test failure.
     // =========================================================================
     integer last_cycles = 0;
 
@@ -207,7 +194,7 @@ module tb_dcache;
                 errors = errors + 1;
             end
 
-            // A second answer, if the request was served twice, lands here.
+            // A duplicate response would arrive in these cycles
             @(posedge clk);
             @(posedge clk);
         end
@@ -275,14 +262,14 @@ module tb_dcache;
         rd_check(CACHEABLE_BASE + 32'h0000, 32'hA0000000, "first word, cold miss");
         expect_eq(stat_misses - m0, 1, "one miss");
 
-        // The rest of that line must now hit: this is what a 64-byte line buys.
+        // The rest of the line must hit
         h0 = stat_hits;
         for (i = 1; i < WORDS_PER_LINE; i = i + 1)
             rd_check(CACHEABLE_BASE + i*4, 32'hA0000000 + i, "rest of the line");
         expect_eq(stat_hits - h0, WORDS_PER_LINE-1, "the whole line hit");
         expect_eq(stat_misses - m0, 1, "no further misses inside the line");
 
-        // A hit costs two cycles: address in, data out.
+        // A hit takes two cycles
         rd_check(CACHEABLE_BASE + 32'h0004, 32'hA0000001, "hit again");
         expect_eq(last_cycles, 2, "a hit takes two cycles");
 
@@ -291,33 +278,32 @@ module tb_dcache;
         wr(CACHEABLE_BASE + 32'h0008, 4'b1111, 32'hDEADBEEF);
         rd_check(CACHEABLE_BASE + 32'h0008, 32'hDEADBEEF, "write hit reads back");
 
-        // Byte and halfword stores must leave their neighbours alone. A cache
-        // that drops wstrb passes every test above and fails here.
+        // Byte and halfword stores must leave the other bytes unchanged
         wr(CACHEABLE_BASE + 32'h000C, 4'b1111, 32'h11223344);
         wr(CACHEABLE_BASE + 32'h000C, 4'b0001, 32'h000000FF);
         rd_check(CACHEABLE_BASE + 32'h000C, 32'h112233FF, "sb keeps the other 3 bytes");
         wr(CACHEABLE_BASE + 32'h000C, 4'b1100, 32'hAAAA0000);
         rd_check(CACHEABLE_BASE + 32'h000C, 32'hAAAA33FF, "sh keeps the low half");
 
-        // Nothing has been written back yet - the line is dirty in the cache.
+        // The line is dirty in the cache and not yet written back
         expect_eq(dram[3], 32'hA0000003, "memory still holds the old word");
 
         // ------------------------------------------------------------------
         $display("\n-- eviction puts the right line back --");
-        // Five distinct lines in the same set: index bits are addr[9:6], so
-        // stepping by 1 KB keeps the index and changes the tag.
+        // Five lines in one set (index addr[9:6]; 1 KB steps change only the
+        // tag) force one eviction in a 4-way cache
         e0 = stat_evictions;
         for (i = 1; i <= 4; i = i + 1)
             rd_check(CACHEABLE_BASE + i*32'h400, 32'hA0000000 + (i*32'h400)/4,
                      "fill another way");
         expect_eq(stat_evictions - e0, 1, "the fifth line evicted one");
 
-        // The dirty words must have reached memory, at their own addresses.
+        // The dirty words must be in memory at their own addresses
         expect_eq(dram[2], 32'hDEADBEEF, "evicted word 2 landed in memory");
         expect_eq(dram[3], 32'hAAAA33FF, "evicted word 3 landed in memory");
         expect_eq(dram[0], 32'hA0000000, "clean words unchanged");
 
-        // And reading it back now must miss and refill from memory.
+        // Reading it again must refill from memory
         rd_check(CACHEABLE_BASE + 32'h0008, 32'hDEADBEEF, "refilled after eviction");
 
         // ------------------------------------------------------------------
@@ -325,8 +311,7 @@ module tb_dcache;
         m0 = stat_uncached;
         mmio[0] = 32'h1111_1111;
         rd_check(32'h1000_0000, 32'h1111_1111, "uncached read");
-        // Change it behind the cache's back. A cached copy would be returned
-        // instead, which is exactly how a cached device register goes wrong.
+        // Change it behind the cache; a cached copy would return the old value
         mmio[0] = 32'h2222_2222;
         rd_check(32'h1000_0000, 32'h2222_2222, "uncached read sees the new value");
         wr(32'h1000_0004, 4'b1111, 32'h3333_3333);
@@ -335,14 +320,12 @@ module tb_dcache;
 
         // ------------------------------------------------------------------
         $display("\n-- the second cacheable window --");
-        // Block RAM at the other end of the map. It has to be cached like any
-        // other memory: leaving it out is what made the machine slower with a
-        // cache than without one, because the BIOS lives there.
+        // The boot RAM window is cached like SDRAM
         m0 = stat_misses;
         rd_check(32'h0000_0000, 32'hC0000000, "second window, cold miss");
         expect_eq(stat_misses - m0, 1, "one miss for the whole line");
-        // Counted from here: a miss ends by returning to the lookup, which then
-        // hits, so the cold read scores a hit of its own.
+        // Counted from here: a miss completes through a lookup that counts as
+        // a hit, so the cold read above also scored one
         h0 = stat_hits;
         rd_check(32'h0000_0004, 32'hC0000001, "and the rest of its line hits");
         expect_eq(stat_hits - h0, 1, "the neighbour hit");
@@ -365,7 +348,7 @@ module tb_dcache;
         expect_eq(dram[32'h100/4], 32'hCAFEF00D, "flush wrote back line A");
         expect_eq(dram[32'h800/4], 32'h5A5A5A5A, "flush wrote back line B");
 
-        // Everything is invalid now, so the next access must miss.
+        // The flush also invalidated, so the next access misses
         m0 = stat_misses;
         rd_check(CACHEABLE_BASE + 32'h0100, 32'hCAFEF00D, "read after flush");
         expect_eq(stat_misses - m0, 1, "flush invalidated the line");
@@ -373,15 +356,9 @@ module tb_dcache;
         // ------------------------------------------------------------------
         $display("\n-- a flush arriving in the same cycle as a write hit --");
         //
-        // One cycle wide, and invisible from the CPU side: the write lands in
-        // the data array either way, so reading it back through the cache
-        // returns the right answer. What goes missing is the dirty bit, and the
-        // evidence only appears at the next flush - by which time the line has
-        // been invalidated and the word is gone.
-        //
-        // This is a real bug that reached the board's BIOS before it was found
-        // here, and it is exactly the shape this project keeps running into:
-        // two always blocks deciding the same thing separately.
+        // The write reaches the data array either way and reads back correctly
+        // through the cache; the failure mode is a lost dirty bit, visible only
+        // when a later flush does not write the word back.
         wr(CACHEABLE_BASE + 32'h3000, 4'b1111, 32'h0000_AAAA);
         @(negedge clk); flush_req = 1'b1;
         @(posedge clk);
@@ -392,7 +369,7 @@ module tb_dcache;
 
         rd_check(CACHEABLE_BASE + 32'h3000, 32'h0000_AAAA, "line resident again");
 
-        // The race: request the store and the flush on the same clock edge.
+        // Store and flush requested on the same clock edge
         @(negedge clk);
         cpu_addr    = CACHEABLE_BASE + 32'h3000;
         cpu_wdata   = 32'h0000_BBBB;
@@ -419,11 +396,10 @@ module tb_dcache;
         end
         while (flush_busy) @(posedge clk);
 
-        // The store must still be readable...
+        // The store must be readable...
         rd_check(CACHEABLE_BASE + 32'h3000, 32'h0000_BBBB, "racing store survives");
 
-        // ...and, crucially, must still be *dirty*, so a later flush publishes
-        // it. With the dirty bit lost, this is where it disappears.
+        // ...and still dirty, so the next flush writes it back
         @(negedge clk); flush_req = 1'b1;
         @(posedge clk);
         while (!flush_busy) @(posedge clk);
@@ -439,8 +415,7 @@ module tb_dcache;
         for (i = 0; i < 512; i = i + 1)
             rd_check(CACHEABLE_BASE + 32'h2000 + i*4, 32'h5000_0000 + i, "walk");
 
-        // Flush and confirm every one of them is in memory, not just in a way
-        // that happens still to be resident.
+        // Flush and confirm every word reached memory
         @(negedge clk);
         flush_req = 1'b1;
         @(posedge clk);

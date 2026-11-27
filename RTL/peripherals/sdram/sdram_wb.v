@@ -1,23 +1,16 @@
 `include "wb_defines.vh"
 
 // =============================================================================
-// Wishbone slave for the Tang Nano 20K embedded SDRAM.
+// Wishbone slave adapter for sdram_core (Tang Nano 20K in-package SDRAM).
 //
-// Two jobs: turn the Wishbone handshake into the controller's pulse-and-wait
-// interface, and keep the SDRAM refreshed.
+// Converts a Wishbone transfer into the controller's single-cycle rd/wr pulse
+// and waits for completion, and issues auto-refresh from its own timer. The
+// part needs 4096 refreshes per 64 ms (one per 15.6 us); refresh takes
+// priority over bus requests, which simply wait for ACK.
 //
-// Refresh is not optional and is not something software can be trusted with.
-// SDRAM holds each bit on a capacitor, so every row must be re-read inside the
-// retention window or the data decays. This part needs 4096 refreshes per 64 ms
-// - one every 15.6 us - and the controller refreshes one row per `refresh`
-// pulse. So a timer here issues them, and it outranks CPU accesses: a bus
-// transfer can be made to wait simply by withholding ACK, whereas a missed
-// refresh corrupts memory silently. The cost is roughly 1% of bandwidth.
-//
-// The handshake with the controller needs care. `busy` does not rise until the
-// cycle *after* the command pulse, so a naive "wait for !busy" sees the old
-// idle state and finishes instantly. Hence the explicit two-phase wait: first
-// observe the controller accept the command, only then wait for it to finish.
+// The controller raises `busy` one cycle after a command pulse, so the
+// sequencer first waits for busy to rise (command accepted) and only then for
+// it to fall (command complete).
 // =============================================================================
 module sdram_wb #(
     parameter FREQ = `SOC_CLK_HZ
@@ -35,7 +28,7 @@ module sdram_wb #(
     output reg  [`WB_DATA_WIDTH-1:0] wb_dat_o,
     output reg                       wb_ack_o,
 
-    // --- To the SDRAM controller ---
+    // --- To sdram_core ---
     output reg                       sd_rd,
     output reg                       sd_wr,
     output reg                       sd_refresh,
@@ -47,14 +40,14 @@ module sdram_wb #(
     input  wire                      sd_busy
 );
 
-    // 15 us in clock cycles, comfortably inside the 15.6 us requirement
+    // Refresh every 15 us, inside the 15.6 us requirement
     localparam integer REFRESH_CYCLES = FREQ / 1_000_000 * 15;
     localparam TIMER_W = 16;
 
     localparam ST_IDLE      = 3'd0;
-    localparam ST_WAIT_BUSY = 3'd1;   // controller has not accepted the command yet
-    localparam ST_ACTIVE    = 3'd2;   // command in flight
-    localparam ST_ACK       = 3'd3;   // one cycle of ACK low, then release
+    localparam ST_WAIT_BUSY = 3'd1;   // command issued, not yet accepted
+    localparam ST_ACTIVE    = 3'd2;   // command in progress
+    localparam ST_ACK       = 3'd3;   // ACK high; master drops STB
 
     localparam OP_READ    = 2'd0;
     localparam OP_WRITE   = 2'd1;
@@ -65,7 +58,7 @@ module sdram_wb #(
     reg [TIMER_W-1:0] refresh_timer;
     reg               refresh_pending;
 
-    // The controller takes a byte address; 8 MB needs 23 bits
+    // Byte address within the 8 MB region
     assign sd_addr  = wb_adr_i[22:0];
     assign sd_din   = wb_dat_i;
     assign sd_wmask = wb_sel_i;
@@ -110,15 +103,15 @@ module sdram_wb #(
             wb_dat_o   <= 32'd0;
         end
         else begin
-            // Commands are single-cycle pulses, ACK is a single-cycle response
+            // Command strobes and ACK are single-cycle pulses
             sd_rd      <= 1'b0;
             sd_wr      <= 1'b0;
             sd_refresh <= 1'b0;
             wb_ack_o   <= 1'b0;
 
             case (state)
-                // sd_busy is also high during the controller's 200 us power-on
-                // wait and its init sequence, so this doubles as "not ready yet"
+                // busy is also high during the controller's power-up and
+                // initialisation sequence, which holds off the first access
                 ST_IDLE: if (!sd_busy) begin
                     if (refresh_pending) begin
                         sd_refresh <= 1'b1;
@@ -142,8 +135,7 @@ module sdram_wb #(
 
                 ST_ACTIVE: begin
                     if (op == OP_READ) begin
-                        // dout32 is the raw DQ bus and is only valid while
-                        // data_ready is high, so capture on exactly that cycle
+                        // dout32 is valid only while data_ready is high
                         if (sd_data_ready) begin
                             wb_dat_o <= sd_dout;
                             wb_ack_o <= 1'b1;
@@ -156,7 +148,7 @@ module sdram_wb #(
                             state    <= ST_ACK;
                         end
                         else begin
-                            state <= ST_IDLE;   // refresh: nothing to acknowledge
+                            state <= ST_IDLE;   // refresh: no bus response
                         end
                     end
                 end
@@ -167,5 +159,10 @@ module sdram_wb #(
             endcase
         end
     end
+
+    // The region is decoded upstream
+    /* verilator lint_off UNUSEDSIGNAL */
+    wire unused_adr = |wb_adr_i[31:23];
+    /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule
