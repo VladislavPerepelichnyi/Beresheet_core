@@ -1,2 +1,4 @@
 build/
 schematics/
+*.tar.gz
+*.tar
