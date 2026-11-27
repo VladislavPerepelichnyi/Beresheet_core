@@ -1,0 +1,146 @@
+`include "wb_defines.vh"
+
+// =============================================================================
+// Wishbone interconnect: address decoder, return multiplexer, error slave.
+//
+// The forward path is not a multiplexer at all. Address, write data, WE and SEL
+// are broadcast to every slave - plain fan-out. Only two things need logic:
+//
+//   1. a decoder that steers STB, so exactly one slave is told it is being asked
+//   2. a return mux that selects DAT_I / ACK / ERR from that slave
+//
+// The error slave is not optional. Section 2.2.3 of the spec requires that the
+// slave assert ACK, ERR or RTY "in response to every assertion of the STB_O
+// signal". An address that matches no region would therefore never be answered,
+// and the master would wait forever with no diagnostic. Instead the decoder
+// routes unmapped addresses to a responder that asserts ERR on the next cycle.
+// =============================================================================
+module wb_intercon (
+    input  wire clk,
+    input  wire rst,
+
+    // --- From the master (or arbiter) ---
+    input  wire [`WB_ADDR_WIDTH-1:0] m_adr_i,
+    input  wire [`WB_DATA_WIDTH-1:0] m_dat_i,
+    input  wire [`WB_SEL_WIDTH-1:0]  m_sel_i,
+    input  wire                      m_we_i,
+    input  wire                      m_stb_i,
+    input  wire                      m_cyc_i,
+    output wire [`WB_DATA_WIDTH-1:0] m_dat_o,
+    output wire                      m_ack_o,
+    output wire                      m_err_o,
+
+    // --- Broadcast to all slaves ---
+    output wire [`WB_ADDR_WIDTH-1:0] s_adr_o,
+    output wire [`WB_DATA_WIDTH-1:0] s_dat_o,
+    output wire [`WB_SEL_WIDTH-1:0]  s_sel_o,
+    output wire                      s_we_o,
+    output wire                      s_cyc_o,
+
+    // --- Per-slave strobe and response: boot RAM ---
+    output wire                      boot_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] boot_dat_i,
+    input  wire                      boot_ack_i,
+
+    // --- Per-slave strobe and response: UART ---
+    output wire                      uart_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] uart_dat_i,
+    input  wire                      uart_ack_i,
+
+    // --- Per-slave strobe and response: SDRAM ---
+    output wire                      sdram_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] sdram_dat_i,
+    input  wire                      sdram_ack_i,
+
+    // --- Per-slave strobe and response: CLINT ---
+    output wire                      clint_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] clint_dat_i,
+    input  wire                      clint_ack_i,
+
+    // --- Per-slave strobe and response: LED PWM ---
+    output wire                      led_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] led_dat_i,
+    input  wire                      led_ack_i,
+
+    // --- Per-slave strobe and response: SD card ---
+    output wire                      sd_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] sd_dat_i,
+    input  wire                      sd_ack_i,
+
+    // --- Per-slave strobe and response: PLIC ---
+    output wire                      plic_stb_o,
+    input  wire [`WB_DATA_WIDTH-1:0] plic_dat_i,
+    input  wire                      plic_ack_i,
+
+    // --- Observation ---
+    output wire                      decode_miss    // address matched no region
+);
+
+    // ------------------------------------------------------------------------
+    // Broadcast
+    // ------------------------------------------------------------------------
+    assign s_adr_o = m_adr_i;
+    assign s_dat_o = m_dat_i;
+    assign s_sel_o = m_sel_i;
+    assign s_we_o  = m_we_i;
+    assign s_cyc_o = m_cyc_i;
+
+    // ------------------------------------------------------------------------
+    // Decode: exactly one strobe, or none
+    // ------------------------------------------------------------------------
+    wire [7:0] region = `REGION_SEL(m_adr_i);
+
+    wire sel_boot  = (region == `REGION_BOOT);
+    wire sel_clint = (region == `REGION_CLINT);
+    wire sel_plic  = (region == `REGION_PLIC);
+    wire sel_sd    = (region == `REGION_SD);
+    wire sel_uart  = (region == `REGION_UART);
+    wire sel_led   = (region == `REGION_LED);
+    wire sel_sdram = (region == `REGION_SDRAM);
+    wire sel_none  = ~(sel_boot | sel_clint | sel_plic | sel_uart |
+                       sel_led  | sel_sd    | sel_sdram);
+
+    // Adding a device means adding one line here and one in the return mux
+    // below. Everything else - address, write data, WE, SEL - is already
+    // broadcast to every slave.
+    assign boot_stb_o  = m_stb_i & sel_boot;
+    assign clint_stb_o = m_stb_i & sel_clint;
+    assign plic_stb_o  = m_stb_i & sel_plic;
+    assign sd_stb_o    = m_stb_i & sel_sd;
+    assign uart_stb_o  = m_stb_i & sel_uart;
+    assign led_stb_o   = m_stb_i & sel_led;
+    assign sdram_stb_o = m_stb_i & sel_sdram;
+
+    assign decode_miss = m_stb_i & sel_none;
+
+    // ------------------------------------------------------------------------
+    // Error slave: answer an unmapped access instead of hanging the bus
+    // ------------------------------------------------------------------------
+    reg err_ack;
+    always @(posedge clk or posedge rst) begin
+        if (rst) err_ack <= 1'b0;
+        else     err_ack <= decode_miss & ~err_ack;   // one cycle, then release
+    end
+
+    // ------------------------------------------------------------------------
+    // Return mux
+    // ------------------------------------------------------------------------
+    assign m_dat_o = sel_boot  ? boot_dat_i  :
+                     sel_clint ? clint_dat_i :
+                     sel_plic  ? plic_dat_i  :
+                     sel_uart  ? uart_dat_i  :
+                     sel_led   ? led_dat_i   :
+                     sel_sd    ? sd_dat_i    :
+                     sel_sdram ? sdram_dat_i : {`WB_DATA_WIDTH{1'b0}};
+
+    assign m_ack_o = (sel_boot  & boot_ack_i)  |
+                     (sel_clint & clint_ack_i) |
+                     (sel_plic  & plic_ack_i)  |
+                     (sel_uart  & uart_ack_i)  |
+                     (sel_led   & led_ack_i)   |
+                     (sel_sd    & sd_ack_i)    |
+                     (sel_sdram & sdram_ack_i);
+
+    assign m_err_o = err_ack;
+
+endmodule
