@@ -12,14 +12,13 @@
 // operand signs differ, and a non-zero remainder always carries the sign of the
 // dividend.
 //
-// The two special cases from Table 11 of the ISA manual bypass the loop and
-// finish in a single cycle:
+// The two special cases defined by the RV32M spec bypass the loop and finish
+// in a single cycle:
 //   divide by zero      quotient = all ones, remainder = dividend
 //   signed overflow     -2^31 / -1: quotient = -2^31 (the dividend), rem = 0
 //
-// div and rem are rare in real code - the Linux profile in instructions.md has
-// them three orders of magnitude below mul - so one bit per cycle is the right
-// area trade here. Latency: 34 cycles normally, 1 cycle for a special case.
+// Division is rare in real code, so one bit per cycle is the right area trade.
+// Latency: 34 cycles normally, 1 cycle for a special case.
 // =============================================================================
 module div_unit (
     input  wire clk,

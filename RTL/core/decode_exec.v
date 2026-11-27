@@ -8,23 +8,11 @@
 // every branch and jump. The control unit decodes the same instruction in
 // parallel and supplies the select signals.
 //
-// Fixes over the first draft:
-//   * branches now use branch_unit instead of the ALU zero flag, so BNE / BLT /
-//     BGE / BLTU / BGEU work rather than behaving like BEQ;
-//   * LUI drives operand A with zero and AUIPC with the PC, so both produce the
-//     right result instead of adding whatever bits sat in the rs1 field;
-//   * JAL / JALR return addresses reach the writeback mux via link_pc;
-//   * misprediction reporting is gated by "valid", so bubbles stay quiet.
-//
-// RV32M lives here too: the multiply/divide unit shares this stage and its
-// result replaces the ALU result on the cycle it becomes ready, so nothing
-// downstream needs to know the instruction took more than one cycle.
-//
-// So does the CSR file. A CSR access is a read-modify-write spread over two
-// cycles: the old value is captured on the first, the modified value is stored
-// on the second, and the captured old value is what reaches rd. Same trick as
-// RV32M - it leaves on the ordinary ALU result path, so EX/MEM and the
-// writeback multiplexer need no new source.
+// The RV32M unit and the CSR file also live here. Both are multi-cycle and
+// both return their result on the ordinary ALU result path, so EX/MEM and the
+// writeback multiplexer need no extra source. A CSR access is a two-cycle
+// read-modify-write: the old value is captured on the first cycle, the
+// modified value is stored on the second, and the captured value reaches rd.
 // =============================================================================
 module decode_exec (
     input  wire clk,
@@ -49,8 +37,8 @@ module decode_exec (
 
     // --- CSR control, from the control unit ---
     input  wire                  is_csr,           // a Zicsr instruction
-    input  wire                  csr_re,           // this access reads  (Table 7)
-    input  wire                  csr_we,           // this access writes (Table 7)
+    input  wire                  csr_re,           // this access reads
+    input  wire                  csr_we,           // this access writes
     input  wire                  csr_capture,      // first of the two cycles
     input  wire                  csr_commit,       // second of the two cycles
     input  wire                  instret,          // an instruction retired
@@ -88,7 +76,6 @@ module decode_exec (
     output wire                  branch_illegal,    // reserved branch funct3
     output wire                  muldiv_stall,      // RV32M unit still working
     output wire                  csr_exists,        // addressed CSR is implemented
-    output wire [11:0]           csr_addr,          // for the control unit's checks
     output wire [1:0]            csr_priv,          // current privilege mode
     output wire [`BUS_WIDTH-1:0] csr_mtvec,         // machine vector, to pc_gen
     output wire [`BUS_WIDTH-1:0] csr_stvec,         // supervisor vector
@@ -180,10 +167,9 @@ module decode_exec (
     );
 
     // ------------------------------------------------------------------------
-    // RV32M multiply / divide unit
+    // RV32M multiply / divide unit. The request is held for as long as the
+    // instruction sits in this stage; the unit's stall decides when it leaves.
     // ------------------------------------------------------------------------
-    // The request is held for as long as the instruction sits in this stage, so
-    // the unit itself decides when the pipeline may move on.
     muldiv muldiv_inst (
         .clk      (clk),
         .rst      (rst),
@@ -200,22 +186,19 @@ module decode_exec (
     // CSR file and the two-cycle read-modify-write
     // ------------------------------------------------------------------------
     // The CSR specifier is the top 12 bits of the instruction. The immediate
-    // forms take a 5-bit zero-extended value from the rs1 field instead of the
-    // register, which is why uimm and rs1_addr are the same bits.
-    assign csr_addr = instruction_in[31:20];
+    // forms take a 5-bit zero-extended uimm from the rs1 field.
+    wire [11:0] csr_addr = instruction_in[31:20];
 
     wire [`BUS_WIDTH-1:0] csr_operand =
         `CSR_IS_IMM(funct3) ? {{(`BUS_WIDTH-5){1'b0}}, rs1_addr} : rs1_data;
 
     wire [`BUS_WIDTH-1:0] csr_rdata;
 
-    // Captured on the first cycle and held for the second. Two reasons this has
-    // to be a register rather than a straight-through read: the modified value
-    // written back must be derived from the same snapshot that reaches rd, and
-    // the counters change every cycle, so re-reading on the second cycle would
-    // write back a value one cycle stale.
+    // Captured on the first cycle and held for the second, so the value written
+    // back is derived from the same snapshot that reaches rd (the counters
+    // change every cycle).
     reg [`BUS_WIDTH-1:0] csr_old;
-    reg                  csr_old_seip_hw;   // see CSR_unit rmw_seip_hw_only
+    reg                  csr_old_seip_hw;   // see CSR_unit.rmw_seip_hw_only
     wire                 csr_rmw_seip_hw_only;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
@@ -235,7 +218,7 @@ module decode_exec (
 
     assign dbg_csr_old = csr_old;
 
-    // The modify half. Note this uses the captured value, not a fresh read.
+    // The modify half, computed from the captured value.
     reg [`BUS_WIDTH-1:0] csr_new;
     always @(*) begin
         case (funct3)
@@ -294,12 +277,8 @@ module decode_exec (
     );
 
     // ------------------------------------------------------------------------
-    // One result bus leaves this stage.
-    //
-    // For RV32M the unit's result is valid by the cycle muldiv_stall falls; for
-    // a CSR access the captured old value is what the spec says reaches rd. In
-    // both cases EX/MEM latches it exactly like an ALU result, so the writeback
-    // multiplexer needs no extra source.
+    // Stage result. The RV32M result is valid on the cycle muldiv_stall falls;
+    // a CSR access returns the captured old value.
     // ------------------------------------------------------------------------
     assign alu_result = is_csr    ? csr_old       :
                         is_muldiv ? muldiv_result : alu_out;
@@ -330,13 +309,12 @@ module decode_exec (
     assign actual_taken = is_jump | (is_branch & branch_cond);
     assign correct_pc   = actual_taken ? target_pc : (pc_in + 32'd4);
 
-    // A misprediction is simply "we fetched something other than correct_pc".
-    // That covers both directions, and also a BTB entry that aliased onto a
-    // non-branch instruction.
+    // A misprediction is "the next fetch was not correct_pc". That covers both
+    // directions and a BTB entry that aliased onto a non-branch instruction.
     assign mispredict = valid_in & (predicted_pc_in != correct_pc);
 
-    // Reported by the taken instruction itself, which is the precise behaviour
-    // the spec asks for.
+    // Raised on the jump or branch itself, as the spec requires, not on the
+    // fetch of the target.
     assign target_misaligned = valid_in & actual_taken & (target_pc[1:0] != 2'b00);
 
 endmodule

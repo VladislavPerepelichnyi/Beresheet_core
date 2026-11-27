@@ -3,11 +3,10 @@
 // =============================================================================
 // Architectural register file: 32 x 32-bit, two read ports, one write port.
 //
-// The read ports include an internal write-through bypass. In this 3-stage
-// pipeline the Mem/Writeback stage drives the write port combinationally while
-// the very next instruction is reading in Decode/Execute, so the bypass alone
-// resolves every distance-1 RAW hazard - no separate forwarding unit needed.
-// x0 is hardwired to zero on both read and write.
+// The read ports include a write-through bypass. Mem/Writeback drives the write
+// port combinationally while the next instruction reads in Decode/Execute, so
+// the bypass alone resolves every distance-1 RAW hazard; no separate forwarding
+// unit is needed. x0 is hardwired to zero on both read and write.
 // =============================================================================
 module file_register (
     input  wire clk,
@@ -24,7 +23,7 @@ module file_register (
     input  wire [`REG_ADDR_WIDTH-1:0] waddr,
     input  wire [`BUS_WIDTH-1:0]      wdata,
 
-    // Third read port, used only by the testbench to inspect results
+    // Debug read port, for testbench inspection only
     input  wire [`REG_ADDR_WIDTH-1:0] dbg_addr,
     output wire [`BUS_WIDTH-1:0]      dbg_data
 );
@@ -61,8 +60,8 @@ module file_register (
                                                             : reg_file[dbg_addr];
 
     // ------------------------------------------------------------------------
-    // Named aliases so the ABI register names show up in the waveform viewer.
-    // Not driven anywhere else, hence the lint waiver.
+    // ABI-named aliases for the waveform viewer. Nothing reads them, hence the
+    // lint waiver.
     // ------------------------------------------------------------------------
     /* verilator lint_off UNUSEDSIGNAL */
     wire [31:0] x1_ra  = reg_file[1];

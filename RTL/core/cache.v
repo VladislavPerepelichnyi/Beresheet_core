@@ -1,86 +1,33 @@
 `include "definitions.vh"
 /* verilator lint_off DECLFILENAME */
 // =============================================================================
-// VIPT write-back cache. Instantiated twice: once as the data cache, and once
-// with the write path tied off as the instruction cache.
+// VIPT write-back cache: 4-way set associative, 64-byte lines, write-allocate,
+// tree-PLRU replacement. Instantiated twice, as the data cache and, with the
+// write path tied off, as the instruction cache, so both share one verified
+// implementation.
 //
-// Sharing one module is not laziness. The instruction cache differs from the
-// data cache only in never writing, so a separate module would be the same
-// tags, the same PLRU tree, the same fill sequencer and the same fill bugs -
-// verified separately, or more likely not. With one module, everything the
-// data cache's testbench proves is also proven about the instruction cache, and
-// the write, dirty and eviction logic simply disappears when nothing can set a
-// dirty bit.
+// The data array is one 32-bit word wide with a synchronous read so that it
+// infers block RAM; tags, valid and dirty bits are flip-flops because the tag
+// compare happens in the lookup cycle. A hit therefore takes two cycles.
 //
-// 4-way set associative, 64-byte lines, write-back with write-allocate, PLRU
-// replacement. That is Vlad's architecture from RTL/core/drafts/cache_draft.v
-// and it is kept: the FSM shape, the replacement policy and the VIPT address
-// split are all his. What changed is where the data lives, and why is worth
-// recording.
+// Index and offset come from the virtual address (cpu_addr), the tag and the
+// cacheability decision from the physical one (cpu_paddr). This is alias-free
+// because index + offset (10 bits at the default geometry) fits inside the
+// 12-bit Sv32 page offset.
 //
-// The draft read a whole line combinationally:
-//
-//     hit_line = cache_data[index][accessed_way];       // 512 bits, no clock
-//
-// Block RAM cannot do an asynchronous read, so the tool had no choice but to
-// build the array out of flip-flops, and said so:
-//
-//     ERROR (IF0008) : The number(32768) of DFF used to infer "cache_data"
-//     exceeds the resource limit(15750) of current device
-//
-// 32 768 flip-flops for 4 KB of data, on a part with 15 750 of them in total
-// and 2 817 already spent on the CPU. Here the data array is one 32-bit word
-// wide and synchronous, so it infers block RAM; the tags stay in flip-flops
-// because the compare has to happen in the same cycle as the lookup.
-//
-// The cost of that is one cycle: a hit is two cycles, not one, because the
-// address goes in on the first and the data comes out on the second. Against
-// an uncached SDRAM access it is still a large win.
-//
-// --- VIPT, and why it is safe here ---------------------------------------
-//
-// Index and offset come from the *virtual* address, the tag from the physical
-// one. That only works without aliasing if index+offset fits inside the page
-// offset, and it does: 4 ways over 4 KB is 1 KB per way, so 10 bits of index
-// and offset against SV32's 12-bit page offset. Two bits to spare.
-//
-// Until the MMU exists, cpu_paddr and cpu_addr are the same wire. After it,
-// cpu_addr arrives first and cpu_paddr comes from the TLB, which is the whole
-// point of indexing with the virtual address.
-//
-// --- What is not cached ---------------------------------------------------
-//
-// CACHEABLE_BASE and CACHEABLE_SIZE name the one region that may be cached.
-// Everything else - the CLINT, the PLIC, the UART, the LEDs, the SD card -
-// goes straight to the bus. This is not an optimisation. A cached MMIO read
-// returns a stale value from the last time the line was filled, and a cached
-// MMIO write may never reach the device at all; caching a UART transmit
-// register would simply lose the characters.
-//
-// The decision is made on the *physical* address, because that is what names
-// the device. A virtual address says nothing about what it is pointing at.
+// Only the CACHEABLE windows (memory) are cached. Every other access (MMIO)
+// goes to the bus as a single registered transfer, because a device read or
+// write must happen exactly once.
 // =============================================================================
 module cache_vipt #(
     parameter CACHE_SIZE = 4096,        // bytes of data, total across all ways
     parameter LINE_SIZE  = 64,          // bytes per line
     parameter WAY_NUM    = 4,           // must be 4: the PLRU tree assumes it
 
-    // The cacheable windows: memory, and nothing else.
-    //
-    // Two of them, because this machine has two memories. SDRAM is the obvious
-    // one. The 32 KB of block RAM at the reset vector is the one that is easy
-    // to leave out and expensive to leave out: the BIOS runs entirely from it -
-    // its code, its stack, its data - so with block RAM uncached, every fetch
-    // and every stack access takes the slow path and the machine measured
-    // *worse* than it did with no cache at all. 6.51 CPI against 3.56.
-    //
-    // The distinction that matters is memory versus device, not fast versus
-    // slow. A device may not be cached because reading it twice is not the same
-    // as reading it once. Block RAM is memory; it just happens to be nearby.
-    //
-    // Each window must be a power of two and aligned to its own size, which is
-    // what turns the range test into one equality compare. Set a size to zero
-    // to disable that window.
+    // The cacheable windows, one per memory (SDRAM and the boot block RAM;
+    // the BIOS runs from the latter, so it must be cached too). Each window
+    // must be a power of two, aligned to its size, so the range test is one
+    // equality compare. A size of zero disables the second window.
     parameter [`BUS_WIDTH-1:0] CACHEABLE_BASE  = 32'h8000_0000,
     parameter [`BUS_WIDTH-1:0] CACHEABLE_SIZE  = 32'h0080_0000,
     parameter [`BUS_WIDTH-1:0] CACHEABLE2_BASE = 32'h0000_0000,
@@ -101,14 +48,12 @@ module cache_vipt #(
     output wire [`BUS_WIDTH-1:0] cpu_rdata,
     output wire                  cpu_ready,
 
-    // Write back every dirty line and invalidate everything. Held until
-    // flush_busy falls. For fence.i, and for sfence.vma once the MMU can
-    // change what a physical tag means.
+    // Write back every dirty line and invalidate everything (FENCE.I).
+    // flush_busy is high while the flush runs.
     input  wire                  flush_req,
     output wire                  flush_busy,
 
-    // --- Memory side. Same protocol again, so this drives a wb_master_bridge
-    //     exactly as the core used to. ---
+    // --- Memory side. Same protocol, to a wb_master_bridge. ---
     output reg  [`BUS_WIDTH-1:0] mem_addr,
     output reg  [`BUS_WIDTH-1:0] mem_wdata,
     output reg  [3:0]            mem_wstrb,
@@ -118,7 +63,7 @@ module cache_vipt #(
     input  wire [`BUS_WIDTH-1:0] mem_rdata,
     input  wire                  mem_ready,
 
-    // --- Observation, for the testbench and for `make fpga-report` counters ---
+    // --- Statistics, for the testbench and performance reports ---
     output reg  [31:0] stat_hits,
     output reg  [31:0] stat_misses,
     output reg  [31:0] stat_evictions,
@@ -131,10 +76,8 @@ module cache_vipt #(
     localparam OFFSET_BITS  = $clog2(LINE_SIZE);
     localparam INDEX_BITS   = $clog2(SETS);
     localparam WAY_BITS     = $clog2(WAY_NUM);
-    // Full-width tags. An earlier version narrowed them to the size of a single
-    // cacheable window, which saved 1 152 flip flops and was given up when a
-    // second window was added: with two regions at opposite ends of the map the
-    // tag has to say which one a line came from.
+    // Full-width tags: with two cacheable windows the tag must also say which
+    // window a line came from.
     localparam TAG_BITS     = `BUS_WIDTH - INDEX_BITS - OFFSET_BITS;
     localparam W1_BITS      = $clog2(CACHEABLE_SIZE);
     localparam W2_BITS      = (CACHEABLE2_SIZE == 0) ? 1 : $clog2(CACHEABLE2_SIZE);
@@ -167,8 +110,7 @@ module cache_vipt #(
     wire cpu_req = cpu_re | cpu_we;
 
     // --- Tag / valid / dirty, in flip-flops ---------------------------------
-    // Flat arrays indexed by {set, way}: 16 sets x 4 ways x 22 bits is 1 408
-    // flip-flops, which is affordable, and the compare must be combinational.
+    // Flat arrays indexed by {set, way}. The compare must be combinational.
     reg [TAG_BITS-1:0] tag_ram   [0:SETS*WAY_NUM-1];
     reg                valid_ram [0:SETS*WAY_NUM-1];
     reg                dirty_ram [0:SETS*WAY_NUM-1];
@@ -176,7 +118,7 @@ module cache_vipt #(
 
     // --- Data, in block RAM -------------------------------------------------
     // One 32-bit word wide with byte enables, addressed by {way, set, word}.
-    // Synchronous read: this is the change that made the design fit.
+    // Synchronous read, so it maps onto block RAM.
     reg [`BUS_WIDTH-1:0] data_ram [0:DATA_WORDS-1];
     reg [`BUS_WIDTH-1:0] data_dout;
 
@@ -196,7 +138,7 @@ module cache_vipt #(
     end
 
     // =========================================================================
-    // Hit detection and PLRU victim selection. Vlad's logic, kept.
+    // Hit detection and PLRU victim selection
     // =========================================================================
     reg  [WAY_NUM-1:0]  hit_vec;
     reg                 is_hit;
@@ -253,33 +195,10 @@ module cache_vipt #(
 
     assign flush_busy = flushing;
 
-    // Locking only matters for a transfer that actually reaches the bus. A hit
-    // never does, and cannot be interfered with: the only other master on this
-    // bus is instruction fetch, which reads.
-    // Only an uncached transfer can reach the bus as a single access, so only
-    // that one can carry LOCK. A cached atomic never leaves the cache, and
-    // nothing else on this bus writes.
-    assign mem_lock = unc_lock & (state == S_UNC_XFER);
-
     // -------------------------------------------------------------------------
-    // Uncached accesses are registered in and out, and this is a timing
-    // decision that was made the expensive way round.
-    //
-    // The first version passed them through combinationally, so that an MMIO
-    // access would cost exactly what it did before the cache existed. It did -
-    // and it also put this cache's cacheability decode and read-data mux into
-    // the longest path in the whole SoC, which already ran
-    //
-    //     ALU address -> bus arbiter -> slave decode -> read data -> writeback
-    //
-    // in a single cycle. Synthesis reported it plainly: the worst path went
-    // through alu_result, then dcache/bypass, then the arbiter, then back
-    // through dcache/dmem_rdata into the register file - 44.2 ns against a
-    // 41.7 ns period. The design did not close.
-    //
-    // Registering both ends costs two cycles on a UART or CLINT access, which
-    // nothing here is sensitive to, and cuts that trunk in half. A cache that
-    // is a pipeline stage is worth more than one that is a wire.
+    // Uncached accesses are registered in and out. Passing them through
+    // combinationally would put the cacheability decode and the read-data mux
+    // on the core's longest path; registering costs two cycles per MMIO access.
     // -------------------------------------------------------------------------
     wire uncached_req = cpu_req && !cacheable && !flushing && (state == S_IDLE);
 
@@ -287,30 +206,21 @@ module cache_vipt #(
     reg [3:0]            unc_wstrb;
     reg                  unc_we, unc_re, unc_lock;
 
-    // A flush outranks a waiting request. Both the data array write and the
-    // dirty bit have to agree about that, and they are in different always
-    // blocks - so the condition lives here once rather than being written out
-    // twice. Written out twice, it was wrong once: the sequential block gave
-    // way to the flush while the combinational block still wrote the array, so
-    // the word landed in a line nothing had marked dirty and the flush walked
-    // straight past it.
+    // Only an uncached transfer reaches the bus as a single access, so only it
+    // can carry LOCK. Cached atomics complete inside the cache, and the only
+    // other bus master (instruction fetch) never writes.
+    assign mem_lock = unc_lock & (state == S_UNC_XFER);
+
+    // A flush outranks a waiting request. The data-array write and the dirty
+    // bit live in different always blocks, so both use this one condition.
     wire flush_start = flush_req && !flushing && (state == S_IDLE);
     wire serve_req   = (state == S_IDLE) && !flush_start &&
                        cpu_req && cacheable;
 
     // -------------------------------------------------------------------------
-    // The answer is combinational off the state, not registered, and that is a
-    // correctness requirement rather than a preference.
-    //
-    // The core holds its request until it sees ready and only advances on the
-    // clock edge at the end of that cycle. A registered ready is therefore
-    // asserted in a cycle where the request is still present - so the FSM would
-    // see the same request again, serve it a second time, and answer one access
-    // behind for the rest of time. On a store it would write the array twice.
-    //
-    // With ready decoded from the state instead, S_HIT is reached exactly once
-    // per request and the core advances out of it. Both terms are cheap: a
-    // three-bit state compare, and a block RAM output register.
+    // ready is decoded from the state. The core holds its request through the
+    // ready cycle, so S_HIT / S_UNC_DONE are each entered exactly once per
+    // request and the FSM returns to idle as the core advances.
     // -------------------------------------------------------------------------
     assign cpu_ready = (state == S_HIT) || (state == S_UNC_DONE);
     assign cpu_rdata = (state == S_UNC_DONE) ? unc_rdata : data_dout;
@@ -399,8 +309,6 @@ module cache_vipt #(
                 valid_ram[j] <= 1'b0;
                 dirty_ram[j] <= 1'b0;
             end
-            // Left unset in the draft, which left the first victim of every set
-            // undefined in simulation.
             for (j = 0; j < SETS; j = j + 1)
                 plru_tree[j] <= 3'b000;
         end else begin
@@ -430,10 +338,8 @@ module cache_vipt #(
                         else            plru_tree[idx][1] <= ~hit_way[0];
 
                         // A write commits to the array in this cycle; a read
-                        // has its block RAM address presented in this cycle.
-                        // Both then pass through S_HIT, which is what makes the
-                        // request consumed exactly once - see the note on
-                        // cpu_ready above.
+                        // presents its block RAM address. Both then answer
+                        // from S_HIT.
                         if (cpu_we)
                             dirty_ram[{idx, hit_way}] <= 1'b1;
                         state <= S_HIT;
@@ -491,8 +397,7 @@ module cache_vipt #(
                         valid_ram[{act_idx, act_way}] <= 1'b1;
                         dirty_ram[{act_idx, act_way}] <= 1'b0;
                         // Back to IDLE, where the still-asserted request now
-                        // hits. Two extra cycles, and it keeps one comparison
-                        // path instead of two.
+                        // hits: one compare path instead of two.
                         state <= S_IDLE;
                     end else begin
                         beat         <= beat + 1'b1;
@@ -572,9 +477,8 @@ module cache_vipt #(
     end
 
     /* verilator lint_off UNUSEDSIGNAL */
-    // cpu_addr contributes only its index and offset - the tag comes from
-    // cpu_paddr, which is the entire point of a virtually indexed, physically
-    // tagged cache. hit_vec[3] is covered by the final else in the encoder.
+    // cpu_addr contributes only its index and offset; the tag comes from
+    // cpu_paddr. hit_vec[3] is covered by the final else in the encoder.
     wire _unused = |{cpu_addr[`BUS_WIDTH-1:OFFSET_BITS+INDEX_BITS], cpu_addr[1:0],
                      hit_vec[WAY_NUM-1]};
     /* verilator lint_on UNUSEDSIGNAL */

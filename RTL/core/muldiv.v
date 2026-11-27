@@ -12,8 +12,7 @@
 //   On the cycle `stall` falls, `result` is valid and the instruction advances
 //           through the normal ALU-result path.
 //
-// funct3 encoding, from the RV32M listing on page 587 of the Unprivileged ISA
-// manual. Bit 2 separates multiply from divide.
+// funct3 encoding (RV32M). Bit 2 separates multiply from divide.
 //   000 MUL     001 MULH    010 MULHSU  011 MULHU
 //   100 DIV     101 DIVU    110 REM     111 REMU
 // =============================================================================
@@ -26,19 +25,11 @@ module muldiv (
     input  wire [`BUS_WIDTH-1:0] rs1_data,
     input  wire [`BUS_WIDTH-1:0] rs2_data,
 
-    // Higher-priority pipeline stalls. This gates both ends of the operation:
-    //
-    //  * the start, because operands must be final before they are latched. If
-    //    the previous instruction is a load still waiting on the bus, its
-    //    writeback has not happened, so the register file's bypass is off and
-    //    rs1/rs2 still read the old values. Starting then latches stale
-    //    operands and the multiply silently returns the wrong answer.
-    //
-    //  * the finish, because the result cycle must not be skipped while
-    //    something else is holding the instruction in Decode/Execute.
-    //
-    // The first case cannot happen with a zero-latency memory, which is why it
-    // only appeared once a real bus was attached.
+    // Higher-priority pipeline stall. Gates both ends of the operation:
+    //  * the start, because operands must be final before they are latched
+    //    (a load ahead still waiting on the bus has not written back yet);
+    //  * the finish, so the result cycle is not lost while something else
+    //    holds the instruction in Decode/Execute.
     input  wire                  hold,
 
     output wire                  stall,
@@ -64,8 +55,7 @@ module muldiv (
     wire div_signed   = (funct3 == `F3_DIV) || (funct3 == `F3_REM);
     wire div_want_rem = (funct3 == `F3_REM) || (funct3 == `F3_REMU);
 
-    // A single start pulse, on the first cycle the request is seen and the rest
-    // of the pipeline is not holding it back
+    // One start pulse, on the first cycle the request is seen unheld
     wire start     = (state == ST_IDLE) && req && !hold;
     wire start_mul = start && !is_div;
     wire start_div = start &&  is_div;
@@ -107,9 +97,8 @@ module muldiv (
         end
         else begin
             case (state)
-                // Advance on `start`, not on `req`. Gating only the pulse and
-                // letting the state move anyway would leave the sub-unit never
-                // told to begin, and ST_BUSY waiting forever for its done.
+                // Advance on `start`, not on `req`, so the state never moves
+                // without the sub-unit having been started.
                 ST_IDLE: if (start) state <= ST_BUSY;
 
                 ST_BUSY: if (sub_done) begin
@@ -117,10 +106,8 @@ module muldiv (
                     state    <= ST_DONE;
                 end
 
-                // ST_DONE lasts a single cycle: `stall` is low, so the
-                // instruction leaves stage 2 and a following M instruction
-                // starts cleanly on the next cycle. `hold` covers the case
-                // where some other stall source keeps the pipeline in place.
+                // `stall` is low in ST_DONE, so the instruction leaves stage 2.
+                // The state is held while another stall keeps it in place.
                 ST_DONE: if (!hold) state <= ST_IDLE;
 
                 default: state <= ST_IDLE;

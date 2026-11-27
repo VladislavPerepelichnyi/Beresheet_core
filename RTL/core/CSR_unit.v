@@ -4,28 +4,16 @@
 // =============================================================================
 // Control and Status Register file, M / S / U.
 //
-// Holds every privileged register the core implements, plus the current
-// privilege mode, and answers one access per request. It does three things:
+// Holds every implemented CSR, the 64-bit counters and the current privilege
+// mode. Provides the read multiplexer and `exists`, the write port, and the
+// architectural state change on trap entry and xRET.
 //
-//   * storage, the read multiplexer, and `exists`
-//   * the architectural state change on a trap and on an xRET
-//   * the current privilege level, which it owns because a trap changes it
+// Legality checks (read-only, privilege, counter enables) and trap routing are
+// decided by the control unit; this file only exports the state they need
+// (medeleg/mideleg, the mstatus control bits, the counter enables).
 //
-// It deliberately does NOT decide whether an access is legal. Writing a
-// read-only CSR, reaching one from too low a privilege, and reading a counter
-// the enable registers forbid are all decisions the control unit makes next to
-// every other trap it raises. Keeping one place that decides "this instruction
-// is illegal" is worth more than keeping each check next to its storage.
-//
-// It also does not decide *where* a trap goes. That needs medeleg / mideleg,
-// which live here, so they are exported and the control unit combines them with
-// the cause it already computed. The result comes back as `trap_to_s`.
-//
-// Three registers own no storage at all. sstatus, sie and sip are restricted
-// *views* of mstatus, mie and mip - the spec is explicit that "reading any
-// implemented field, or writing any writable field, of sip/sie effects a read
-// or write of the homonymous field of mip/mie". Implementing them as separate
-// state would be a bug waiting to happen.
+// sstatus, sie and sip own no storage: they are restricted views of mstatus,
+// mie and mip, as the spec defines them.
 // =============================================================================
 module CSR_unit (
     input  wire clk,
@@ -33,21 +21,18 @@ module CSR_unit (
 
     // --- Access port, driven from Decode/Execute ---
     input  wire [11:0]           addr,
-    input  wire                  re,        // this access reads  (Table 7)
-    input  wire                  we,        // this access writes (Table 7)
+    input  wire                  re,        // this access reads
+    input  wire                  we,        // this access writes
     input  wire [`BUS_WIDTH-1:0] wdata,     // value to store, already modified
     output reg  [`BUS_WIDTH-1:0] rdata,
     output reg                   exists,    // addressed CSR is implemented
-    // The read-modify-write must not see the PLIC's half of mip.SEIP. rdata
-    // returns sw | hw, as the spec requires for rd, but CSRRS/CSRRC have to
-    // modify the software bit alone (privileged spec, mip/SEIP). Set when the
-    // access is to mip and that software bit is clear, so Decode/Execute can
-    // take bit 9 out of the value it modifies.
+    // mip.SEIP reads as software bit | PLIC line, but CSRRS/CSRRC must modify
+    // the software bit alone. High when the access is to mip and the software
+    // bit is clear, so Decode/Execute removes bit 9 from the value it modifies.
     output wire                  rmw_seip_hw_only,
 
-    // --- Hardware trap entry. Takes priority over a software CSR write in the
-    //     same cycle, which cannot happen anyway: the trapping instruction is
-    //     flushed rather than committed.
+    // --- Trap entry and return. Trap entry takes priority over a CSR write
+    //     in the same cycle (which the control unit never produces).
     input  wire                  trap_take,
     input  wire                  trap_to_s,    // delegated to supervisor mode
     input  wire [`BUS_WIDTH-1:0] trap_epc,     // PC of the trapping instruction
@@ -59,19 +44,13 @@ module CSR_unit (
     // --- Counter inputs ---
     input  wire                  instret,   // one instruction retired
 
-    // --- Real time, from the CLINT. `time` is defined as a read-only view of
-    //     the CLINT's memory-mapped mtime, not a counter of its own.
+    // --- Real time from the CLINT; the `time` CSR is a read-only view of it.
     input  wire [63:0]           mtime,
 
-    // --- Interrupt pins.
-    //
-    //     The machine trio is hardware-driven and read-only in mip: a timer
-    //     interrupt is cleared by writing mtimecmp in the CLINT, an external one
-    //     through the PLIC's claim/complete, a software one through msip.
-    //
-    //     irq_ext_s is the PLIC's second context. It is OR-ed into mip.SEIP
-    //     alongside a software-writable bit, which is what the spec asks for:
-    //     the value read is the logical OR of the two.
+    // --- Interrupt lines. MSIP, MTIP and MEIP are read-only in mip and are
+    //     cleared at their device (CLINT msip / mtimecmp, PLIC claim).
+    //     irq_ext_s, the PLIC's supervisor context, is OR-ed into mip.SEIP
+    //     with a software-writable bit.
     input  wire                  irq_soft,
     input  wire                  irq_timer,
     input  wire                  irq_ext,
@@ -102,10 +81,7 @@ module CSR_unit (
 );
 
     // ------------------------------------------------------------------------
-    // Privilege mode.
-    //
-    // Reset to M, per the spec: a hart comes up in machine mode with no
-    // interrupts enabled, because nothing else is set up yet.
+    // Privilege mode. Resets to M with interrupts disabled.
     // ------------------------------------------------------------------------
     reg [1:0] priv;
     assign priv_o = priv;
@@ -119,9 +95,9 @@ module CSR_unit (
     reg        mstatus_mie,  mstatus_sie;
     reg        mstatus_mpie, mstatus_spie;
     reg [1:0]  mstatus_mpp;                 // 00 U, 01 S, 11 M
-    reg        mstatus_spp;                 // 0 U, 1 S - S was never entered from M
-    reg        mstatus_mprv;                // now real: see the MMU's eff_priv
-    reg        mstatus_sum, mstatus_mxr;   // likewise
+    reg        mstatus_spp;                 // 0 U, 1 S (S is never entered from M)
+    reg        mstatus_mprv;                // data accesses use MPP's privilege
+    reg        mstatus_sum, mstatus_mxr;    // MMU permission modifiers
     reg [`BUS_WIDTH-1:0] satp;
     reg        mstatus_tvm, mstatus_tw, mstatus_tsr;
 
@@ -134,17 +110,14 @@ module CSR_unit (
     reg        mie_msie, mie_mtie, mie_meie;
     reg        mie_ssie, mie_stie, mie_seie;
 
-    // Software-writable pending bits. The supervisor trio has no device behind
-    // it - M-mode software raises and clears them, which is how OpenSBI hands a
-    // timer tick to a kernel on a hart without Sstc.
+    // Software-writable supervisor pending bits. M-mode software raises them on
+    // the kernel's behalf (e.g. OpenSBI's timer on a hart without Sstc).
     reg        mip_ssip, mip_stip, mip_seip_sw;
 
     reg [2:0]  mcounteren, scounteren;      // CY, TM, IR
 
     // ------------------------------------------------------------------------
-    // Counters, 64 bits each even on RV32 (Zicntr, chapter 7). Software reads
-    // them as two halves and re-reads the high half to detect a carry, which is
-    // exactly why the spec insists on 64 bits.
+    // Counters, 64 bits even on RV32 (Zicntr), read as two halves.
     // ------------------------------------------------------------------------
     reg [63:0] cycle_ctr;
     reg [63:0] instret_ctr;
@@ -152,15 +125,9 @@ module CSR_unit (
     // ------------------------------------------------------------------------
     // Assembled read values
     // ------------------------------------------------------------------------
-    // Concatenations rather than shifted ORs, so the bit positions are readable
-    // straight off the source and the widths are right by construction.
-    //
-    // SUM (18) and MXR (19) are real state now; see the MMU's permission
-    // checker. The comment below is what they used to be.
-    // SUM (18) and MXR (19) are read-only zero: they only mean anything once
-    // address translation exists. FS, VS, XS and SD are zero because there is
-    // no floating-point or vector state to track. UBE (6) is zero because this
-    // hart is little-endian only.
+    // Written as concatenations so the bit positions read straight off the
+    // source. FS, VS, XS and SD are zero (no floating-point or vector state);
+    // UBE is zero (little-endian only).
     wire [`BUS_WIDTH-1:0] mstatus_val = {1'b0,           // 31    SD
                                          8'd0,           // 30:23
                                          mstatus_tsr,    // 22
@@ -200,9 +167,8 @@ module CSR_unit (
                                      mie_ssie,           //  1
                                      1'b0};              //  0
 
-    // mip.SEIP reads as the OR of the software-writable bit and the PLIC's
-    // supervisor context, which is what the spec specifies. Writes land on the
-    // software bit alone - see the write port.
+    // mip.SEIP reads as the OR of the software bit and the PLIC's supervisor
+    // context. Writes land on the software bit alone.
     wire [`BUS_WIDTH-1:0] mip_val = {20'd0,                    // 31:12
                                      irq_ext,                  // 11 MEIP
                                      1'b0,                     // 10
@@ -217,18 +183,15 @@ module CSR_unit (
                                      mip_ssip,                 //  1 SSIP
                                      1'b0};                    //  0
 
-    // An interrupt is visible in sip / maskable in sie only if it is delegated.
-    // Everything else reads as zero there.
+    // An interrupt is visible in sip / sie only if it is delegated; the rest
+    // read as zero.
     wire [`BUS_WIDTH-1:0] sip_val = mip_val & mideleg;
-
-    // Without this, OpenSBI's `csrs/csrc mip, MIP_STIP` on every timer tick
-    // copied the PLIC's live SEIP into mip_seip_sw whenever a supervisor
-    // external interrupt happened to be pending. SEIP then stayed set after
-    // the device was serviced, the kernel's claim read 0, and it took the
-    // interrupt again forever - a livelock in plic_handle_irq the first time
-    // the UART interrupt raced a timer tick (serial8250_do_startup).
-    assign rmw_seip_hw_only = (addr == `CSR_MIP) && !mip_seip_sw;
     wire [`BUS_WIDTH-1:0] sie_val = mie_val & mideleg;
+
+    // Without this, a csrs/csrc on mip (OpenSBI does one per timer tick) would
+    // copy a pending PLIC SEIP into the software bit, leaving SEIP stuck after
+    // the device is serviced.
+    assign rmw_seip_hw_only = (addr == `CSR_MIP) && !mip_seip_sw;
 
     assign mtvec_o       = mtvec;
     assign stvec_o       = stvec;
@@ -249,10 +212,8 @@ module CSR_unit (
     // ------------------------------------------------------------------------
     // Read multiplexer, and the implemented-address decode.
     //
-    // One case statement gives both, which keeps them from drifting apart: an
-    // address that returns data here is exactly an address that reports
-    // exists = 1. `re` does not gate the value, because no CSR in this file has
-    // a read side effect - the spec notes standard CSRs never do.
+    // One case statement gives both, so they cannot drift apart. `re` does not
+    // gate the value: no CSR here has a read side effect.
     // ------------------------------------------------------------------------
     always @(*) begin
         exists = 1'b1;
@@ -379,25 +340,16 @@ module CSR_unit (
                 instret_ctr <= instret_ctr + 64'd1;
 
             // ----------------------------------------------------------------
-            // Trap entry, in one cycle, into whichever mode owns the trap.
-            //
-            // The two halves are exact mirrors, and the spec spells out that
-            // they do not overlap: when a trap goes to S-mode, "the mcause,
-            // mepc, and mtval registers and the MPP and MPIE fields of mstatus
-            // are not written". Writing both would corrupt an outer M-mode
-            // context that is still live.
-            //
-            // Interrupts are disabled on entry either way, which is what makes
-            // a two-entry stack per mode sufficient: the handler cannot be
-            // re-interrupted before it has saved anything.
+            // Trap entry into the mode that owns the trap. Only that mode's
+            // registers and mstatus fields are written; an S-mode trap must not
+            // disturb a live M-mode context.
             // ----------------------------------------------------------------
             if (trap_take) begin
                 if (trap_to_s) begin
                     sepc         <= {trap_epc[`BUS_WIDTH-1:2], 2'b00};
                     scause       <= trap_cause;
                     stval        <= trap_tval;
-                    // SPP is one bit because S-mode is only ever entered from
-                    // S or U - a trap in M-mode is never delegated.
+                    // SPP is one bit: a delegated trap comes from S or U.
                     mstatus_spp  <= (priv != `U_MODE);
                     mstatus_spie <= mstatus_sie;
                     mstatus_sie  <= 1'b0;
@@ -414,17 +366,9 @@ module CSR_unit (
                 end
             end
             // ----------------------------------------------------------------
-            // xRET pops the matching stack: xIE <- xPIE, xPIE <- 1, xPP <- the
-            // least privileged supported mode, privilege <- xPP.
-            //
-            // Setting xPP to U looks like vandalism until you read the spec's
-            // reason: it is a deliberate trap, so a handler that forgets to
-            // reload xPP fails loudly instead of silently returning to the
-            // wrong mode. It is now genuinely U rather than a no-op, because
-            // there is finally somewhere lower to write.
-            //
-            // MPRV clears whenever the new mode is not M, which is always true
-            // for SRET.
+            // xRET pops the matching stack: privilege <- xPP, xIE <- xPIE,
+            // xPIE <- 1, xPP <- U (the least privileged mode). MPRV clears
+            // whenever the new mode is not M, which is always true for SRET.
             // ----------------------------------------------------------------
             else if (trap_return) begin
                 if (trap_ret_s) begin
@@ -486,10 +430,8 @@ module CSR_unit (
                     `CSR_MEDELEG: medeleg <= wdata & `MEDELEG_MASK;
                     `CSR_MIDELEG: mideleg <= wdata & `MIDELEG_MASK;
 
-                    // BASE is bits 31:2. MODE is forced to 0 (Direct), which
-                    // WARL permits: only Direct is implemented, so reading back
-                    // zero tells software the truth rather than accepting a
-                    // vectored setting that would not be honoured.
+                    // BASE is bits 31:2. MODE is forced to 0: only Direct
+                    // mode is implemented (WARL).
                     `CSR_MTVEC: mtvec <= {wdata[`BUS_WIDTH-1:2], 2'b00};
                     `CSR_STVEC: stvec <= {wdata[`BUS_WIDTH-1:2], 2'b00};
 
@@ -535,8 +477,7 @@ module CSR_unit (
                     end
 
                     // Through sip, only SSIP. STIP and SEIP are written by
-                    // machine mode on the kernel's behalf - that is the whole
-                    // mechanism by which OpenSBI delivers sbi_set_timer.
+                    // machine mode on the kernel's behalf.
                     `CSR_SIP: begin
                         if (mideleg[`IRQ_S_SOFT]) mip_ssip <= wdata[`IRQ_S_SOFT];
                     end
@@ -544,38 +485,29 @@ module CSR_unit (
                     `CSR_MCOUNTEREN: mcounteren <= wdata[2:0];
                     `CSR_SCOUNTEREN: scounteren <= wdata[2:0];
 
-                    // satp is real state now. Writing it changes what every
-                    // address in S and U mode means, which is why the control
-                    // unit turns this instruction into an implicit TLB flush -
-                    // the entries cached under the old root are not merely
-                    // stale, they belong to a different address space.
+                    // Sv32 defines both MODE values, so satp is fully
+                    // writable. The control unit flushes the TLBs on a write.
                     `CSR_SATP: satp <= wdata;
 
-                    // Everything else is read-only or does not exist. The
-                    // control unit has already raised an illegal instruction in
-                    // that case, so reaching here means nothing should change.
+                    // Read-only or non-existent: the control unit has already
+                    // raised an illegal instruction.
                     default: ;
                 endcase
             end
         end
     end
 
-    /* verilator lint_off UNUSEDSIGNAL */
-    // Reads never have side effects in this file, so `re` is not needed to
-    // produce data. It is kept on the port because the control unit computes
-    // it from Table 7 anyway and a future CSR with a read side effect will
-    // need it.
-    wire unused_re = re;
-    // Stored so a kernel can read back what it wrote, but nothing consumes it:
+    // To the MMUs
     assign satp_o         = satp;
     assign mstatus_mpp_o  = mstatus_mpp;
     assign mstatus_mprv_o = mstatus_mprv;
     assign mstatus_sum_o  = mstatus_sum;
     assign mstatus_mxr_o  = mstatus_mxr;
 
-    // MPRV redirects load/store privilege, and with no PMP and no translation
-    // there is no protection for it to redirect.
-    wire unused_mprv = mstatus_mprv;
+    /* verilator lint_off UNUSEDSIGNAL */
+    // No CSR here has a read side effect, so `re` is unused. It stays on the
+    // port as the spec-defined "this access reads" qualifier.
+    wire unused_re = re;
     /* verilator lint_on UNUSEDSIGNAL */
 
 endmodule

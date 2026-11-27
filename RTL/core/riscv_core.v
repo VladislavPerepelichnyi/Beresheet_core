@@ -1,109 +1,48 @@
 `include "definitions.vh"
 
 // =============================================================================
-// RV32I core, 3-stage in-order pipeline.
+// RV32IMA core (Zicsr, Zicntr, Zifencei, M/S/U modes, Sv32 MMU), 3-stage
+// in-order pipeline.
 //
-//   Stage 1  Fetch                  pc_gen + BTB, instruction memory port
+//   Stage 1  Fetch                  pc_gen + BTB, I-TLB, instruction port
 //   Stage 2  Decode and Execute     register file, immediate, ALU, branch,
-//                                   RV32M multiply / divide, Zicsr CSR file
-//   Stage 3  Memory and Writeback   load/store alignment, writeback mux
+//                                   RV32M unit, CSR file, D-TLB
+//   Stage 3  Memory and Writeback   load/store alignment, atomics, writeback
 //
 // Hazard handling:
-//   RAW at distance 1  - the register file's write-through bypass; the Mem/WB
-//                        stage drives the write port combinationally, so the
-//                        instruction reading in stage 2 sees the new value.
-//   RAW at distance >1 - already committed, ordinary read.
-//   Load-use           - the data memory answers combinationally, so a load
-//                        also resolves through the bypass with no bubble. If a
-//                        cache or bus replaces it, it lowers `ready` and the
-//                        control unit's mem_stall path inserts the bubbles.
-//   Control            - BTB prediction in stage 1, resolution in stage 2,
-//                        one-cycle penalty on a miss.
-//   RV32M latency      - multiply and divide take more than a cycle, so the M
-//                        unit holds the instruction in stage 2 and bubbles
-//                        Mem/Writeback until its result is ready.
-//   Fetch latency      - if the instruction memory is not ready, the PC holds
-//                        and IF/ID takes a bubble, so stages 2 and 3 drain
-//                        rather than re-executing.
+//   RAW            the register file's write-through bypass: stage 3 drives
+//                  the write port combinationally, so the instruction reading
+//                  in stage 2 sees the new value, loads included.
+//   Control        BTB prediction in stage 1, resolution in stage 2, one
+//                  bubble on a misprediction.
+//   Multi-cycle    RV32M, CSR accesses, page walks, FENCE.I, trap entry and
+//                  a pending fetch hold stages 1-2 and bubble stage 3.
+//   Data memory    an access that is not ready freezes the whole pipeline.
 //
-// Memory interfaces are left external so the same core drives simulation
-// memories today and a Wishbone/AXI4-Lite bridge later. Interrupt pins and the
-// real-time counter come in from the CLINT the same way.
-//
-// Traps vector: a fault or a pending interrupt redirects the PC to mtvec in one
-// cycle, records mepc/mcause/mtval, and pushes mstatus's interrupt-enable stack.
-// MRET reverses it. See control_unit.v for the sequence.
+// Both memory ports use a request/ready handshake and are bridged to Wishbone
+// (through the caches) by the SoC. Page-table walks from both MMUs share the
+// data port. Interrupt lines and mtime come from the CLINT and the PLIC.
 // =============================================================================
 module riscv_core #(
-    // The two TLBs are deliberately different sizes, and the reason is where
-    // each one sits.
-    //
-    // The data TLB is in Decode/Execute, on the end of the longest path in the
-    // machine: a load returning from the cache, through writeback, through the
-    // register file's write-through bypass, through the ALU, and only then into
-    // the TLB. Measured on the board, a fully associative compare there costs
-    // about 3.5 ns per doubling - 4 entries closes with 11% margin, 8 with 2.8%,
-    // and 16 does not close at all.
-    //
-    // The instruction TLB starts from pc_f, which is a register, so it is on a
-    // shorter path - but not a free one: it feeds the instruction cache's index
-    // and tag compare, and it turned out to matter almost as much.
-    //
-    // Measured on the board, at 24 MHz with a 41.667 ns period:
-    //
-    //     DTLB  ITLB   longest path   real margin   setup violations
-    //       16    16      49.49 ns      -5.58 ns          1357
-    //        8     8      42.76 ns      +1.15 ns          1055
-    //        4    16      42.38 ns      +1.53 ns          1007
-    //        4     8      40.09 ns      +3.81 ns           265
-    //        4     4      39.25 ns      +4.65 ns             0
-    //        2     4      39.33 ns      +4.57 ns            31
-    //
-    // The data TLB is 2 and not 4, and the reason is variance rather than the
-    // averages. After the walker gained its address guards, three synthesis
-    // runs of near-identical logic at DTLB=4 gave 39.25, 40.59 and 41.80 ns -
-    // a two-nanosecond band, because the design sits right at the edge of what
-    // the router can place. Removing a *term* from the fault path made one run
-    // measure worse, which is not something logic can do; it is noise.
-    //
-    // At DTLB=2 the same measurement lands at 39.33 ns with 31 violated
-    // endpoints instead of 871, which is a result that means something. Two
-    // entries is small, and it is affordable here precisely because a miss is
-    // cheap: a two-level walk against a page table that is itself in the data
-    // cache costs a handful of cycles, not the hundreds a cache miss costs.
-    // One instruction never needs more than one data translation.
-    //
-    // 4 and 4 is chosen for the last column rather than the fourth. Zero
-    // violations means the router met the *over-constrained* target everywhere,
-    // which is repeatable; 265 violations means the reported worst path is
-    // wherever the router happened to stop, and this router has been seen to
-    // move by 3 ns between runs on identical RTL. 9.2% that might be 5% next
-    // time is worth less than 11.2% that will still be 11.2%.
-    //
-    // Four entries is small, and the cost of missing is not large: a walk is
-    // two reads of a page table that is itself cached, so a handful of cycles
-    // rather than the hundreds a cache miss costs. Sv32 Linux maps the kernel
-    // with 4 MiB megapages, so four instruction entries cover 16 MiB of text.
-    //
-    // The way to afford more is to shorten the trunk, not to shrink the TLB
-    // further: a load-use interlock takes the register file's write-through
-    // bypass out of that path and would leave room for both TLBs to grow. That
-    // has been the standing next lever since the timing work two stages ago.
+    // TLB sizes are set by timing, not hit rate. The fully associative D-TLB
+    // compare ends the longest path (load data -> bypass -> ALU -> D-TLB), and
+    // every doubling costs about 3.5 ns; the I-TLB feeds the I-cache tag
+    // compare. A miss is only a two-level walk through the data cache, and
+    // with 4 MiB kernel megapages four I-TLB entries cover 16 MiB of text.
     parameter DTLB_ENTRIES = 2,
     parameter ITLB_ENTRIES = 4
 )(
     input  wire clk,
     input  wire rst,
 
-    // --- Instruction fetch port ---
-    // Handshaked, so the fetch can sit behind a bus or a cache. imem_ready
-    // tied high restores the original zero-latency behaviour.
+    // --- Instruction fetch port (physical address; hold until ready) ---
     output wire [`BUS_WIDTH-1:0] imem_addr,
     output wire                  imem_req,
     input  wire [`BUS_WIDTH-1:0] imem_rdata,
     input  wire                  imem_ready,
 
-    // --- Data port ---
+    // --- Data port (physical address; hold until ready). Also carries the
+    //     MMUs' page-table reads. ---
     output wire [`BUS_WIDTH-1:0] dmem_addr,
     output wire [`BUS_WIDTH-1:0] dmem_wdata,
     output wire [3:0]            dmem_wstrb,
@@ -113,9 +52,7 @@ module riscv_core #(
     input  wire [`BUS_WIDTH-1:0] dmem_rdata,
     input  wire                  dmem_ready,
 
-    // --- Interrupt inputs, from the CLINT (and the PLIC later) ---
-    // MMU observation. Not memory mapped, so unconnected instances are
-    // stripped on hardware and visible in simulation.
+    // --- MMU statistics, for simulation; unconnected on hardware ---
     output wire [31:0] dbg_dtlb_hits,
     output wire [31:0] dbg_dtlb_misses,
     output wire [31:0] dbg_itlb_hits,
@@ -123,19 +60,20 @@ module riscv_core #(
     output wire [31:0] dbg_dtlb_faults,
     output wire [31:0] dbg_itlb_faults,
 
-    // Zifencei. fence_i_req asks the SoC to write the data cache back and
-    // invalidate the instruction cache; cache_flush_busy is high from the
-    // request until both are done. With no caches the SoC answers at once.
+    // --- Zifencei. fence_i_req asks the SoC to write the data cache back and
+    //     invalidate the instruction cache; cache_flush_busy must go high for
+    //     at least one cycle and stays high until both are done. ---
     output wire        fence_i_req,
     input  wire        cache_flush_busy,
 
+    // --- Interrupts and real time, from the CLINT and the PLIC ---
     input  wire        irq_soft,
     input  wire        irq_timer,
     input  wire        irq_ext,        // PLIC context 0, machine mode
     input  wire        irq_ext_s,      // PLIC context 1, supervisor mode
     input  wire [63:0] mtime,          // for the `time` CSR
 
-    // --- Status ---
+    // --- Status: halted on a trap with a null mtvec (see control_unit) ---
     output wire        halted,
     output wire        trap_error,
     output wire        ebreak_halt,
@@ -147,22 +85,17 @@ module riscv_core #(
     output wire                       retire_valid,
     output wire [`BUS_WIDTH-1:0]      retire_pc,
     output wire [`BUS_WIDTH-1:0]      retire_instruction,
-    // Decode/Execute contents. A trap freezes the pipeline with the offending
-    // instruction still here, so this is the PC to report.
+    // Decode/Execute contents. When the core halts, the offending instruction
+    // is still here.
     output wire [`BUS_WIDTH-1:0]      dbg_stage2_pc,
     output wire [`BUS_WIDTH-1:0]      dbg_stage2_instruction,
     output wire                       dbg_muldiv_stall,
-    // Zicsr observation. The testbench uses these to check that the value
-    // captured at the start of a CSR access is still the value committed at the
-    // end - the atomicity guarantee the spec requires and that no amount of
-    // reading final register values can see.
+    // Zicsr observation: lets the testbench check that each CSR access
+    // captures and commits exactly once.
     output wire                       dbg_csr_capture,
     output wire                       dbg_csr_commit,
     output wire [`BUS_WIDTH-1:0]      dbg_csr_old,
-    // RV32A observation. Same reasoning as the CSR pins: an atomic is a
-    // multi-cycle operation whose intermediate state never appears in any
-    // register, so the only way to check that it happens exactly once is to
-    // watch the sequencer.
+    // RV32A observation: the atomic sequencer's phases and reservation.
     output wire                       dbg_amo_read,
     output wire                       dbg_amo_write,
     output wire                       dbg_resv_valid
@@ -180,7 +113,6 @@ module riscv_core #(
     wire        is_branch, is_jump, is_jalr, is_muldiv, is_atomic;
     wire        muldiv_stall, pipeline_hold;
     wire        is_csr, csr_re, csr_we, csr_capture, csr_commit, csr_exists;
-    wire [11:0] csr_addr;
     wire [1:0]            csr_priv;
     wire [`BUS_WIDTH-1:0] csr_mtvec, csr_stvec, csr_mepc, csr_sepc;
     wire [`BUS_WIDTH-1:0] csr_mip, csr_mie, csr_medeleg, csr_mideleg;
@@ -193,12 +125,12 @@ module riscv_core #(
     wire                  mstatus_mprv, mstatus_sum, mstatus_mxr;
     wire                  sfence_req;
     wire [1:0]            priv = csr_priv;
-    wire        trap_take, trap_to_s, trap_return, trap_ret_s, trap_is_irq;
+    wire        trap_take, trap_to_s, trap_return, trap_ret_s;
     wire [`BUS_WIDTH-1:0] trap_cause_full, trap_tval;
+    wire        mem_stall;
 
-    // Which vector and which return address, chosen by where the trap is going.
-    // Both inputs are registers inside the CSR file, so this is one multiplexer
-    // on already-settled values rather than anything on a critical path.
+    // Trap vector and return address, selected by the destination mode. Both
+    // inputs are CSR registers, so this mux is off the critical path.
     wire [`BUS_WIDTH-1:0] trap_vector   = trap_to_s  ? csr_stvec : csr_mtvec;
     wire [`BUS_WIDTH-1:0] trap_epc_sel  = trap_ret_s ? csr_sepc  : csr_mepc;
 
@@ -229,14 +161,9 @@ module riscv_core #(
     );
 
     // ------------------------------------------------------------------------
-    // Instruction translation
-    //
-    // Sits between the PC and the bus. With satp.MODE clear, or in M-mode, it
-    // is combinational and imem_addr is pc_f exactly as before.
-    //
-    // A fetch that faults never becomes a memory access at all: there is
-    // nothing to fetch, so imem_req stays low and the fault travels forward as
-    // a poisoned IF/ID slot instead.
+    // Instruction translation. In bare mode or M-mode it is combinational and
+    // imem_addr is pc_f. A fetch that faults is never requested; the fault
+    // travels forward as a poisoned IF/ID slot instead.
     // ------------------------------------------------------------------------
     wire [`BUS_WIDTH-1:0] itlb_paddr;
     wire                  itlb_ready, itlb_fault;
@@ -262,8 +189,7 @@ module riscv_core #(
         .paddr        (itlb_paddr),
         .ready        (itlb_ready),
         .page_fault   (itlb_fault),
-        // The cause is fixed for a fetch, so the control unit names it
-        // directly rather than carrying it forward.
+        // Always cause 12 for a fetch; the control unit names it directly.
         .pf_cause     (itlb_cause_unused),
         .ptw_addr     (iptw_addr),
         .ptw_re       (iptw_re),
@@ -276,9 +202,7 @@ module riscv_core #(
 
     assign imem_addr = itlb_paddr;
 
-    // Requested once translation has produced a usable address. While halted
-    // the PC is frozen, so the same address is re-requested harmlessly rather
-    // than needing a separate gate.
+    // Requested once translation has produced a usable address.
     assign imem_req    = itlb_ready & ~itlb_fault;
     wire   fetch_stall = ~itlb_ready | (imem_req & ~imem_ready);
 
@@ -364,7 +288,6 @@ module riscv_core #(
         .branch_illegal    (branch_illegal),
         .muldiv_stall      (muldiv_stall),
         .csr_exists        (csr_exists),
-        .csr_addr          (csr_addr),
         .csr_priv          (csr_priv),
         .csr_mtvec         (csr_mtvec),
         .csr_stvec         (csr_stvec),
@@ -405,18 +328,10 @@ module riscv_core #(
     wire [4:0]                 amo_funct5_m;
 
     // ------------------------------------------------------------------------
-    // Data translation
-    //
-    // In Decode/Execute, not Mem/Writeback, and that placement is the whole
-    // reason page faults come out precise: the address is already here for the
-    // misaligned check, so a page fault joins the existing fault set and the
-    // offending instruction never reaches stage 3. No new trap machinery.
-    //
-    // What crosses into stage 3 is therefore the *physical* address. For a load
-    // or store the ALU result is only ever the address, so it is substituted
-    // rather than carried alongside - one mux instead of a wider pipeline
-    // register. Index and offset are below bit 12 and untranslated, so the
-    // cache sees the same index either way.
+    // Data translation, in Decode/Execute: a page fault joins the other
+    // synchronous faults there and the instruction never reaches stage 3, so
+    // the trap is precise. For a load or store the physical address replaces
+    // the ALU result in EX/MEM.
     // ------------------------------------------------------------------------
     wire [`BUS_WIDTH-1:0] dtlb_paddr;
     wire                  dtlb_ready, dtlb_fault;
@@ -425,15 +340,10 @@ module riscv_core #(
     wire                  dptw_re;
     wire                  dptw_ready;
 
-    // Not for an instruction whose fetch faulted. Its bits are whatever was
-    // last on the bus, and they decode as anything - in the hang that found
-    // this, `lw a5,48(s1)`. That phantom load asked the DTLB for an unmapped
-    // page, faulted, asked again, and because the data walker has priority on
-    // the shared port it starved the ITLB walk that stage 1's fetch needed.
-    // The fetch-fault trap waits for that fetch (redirect_ok), so nothing ever
-    // retired: Linux froze on the sret into busybox's first, not-yet-mapped
-    // page. The trap logic already ignored the stall; the request itself has
-    // to go too, or the walker keeps the port.
+    // A slot whose fetch faulted carries meaningless bits that may decode as a
+    // load or store. It must not request a data translation: the data walker
+    // has priority on the shared port and would starve the I-TLB walk the
+    // pending fetch-fault trap is waiting for.
     wire dmem_op_d = (ctl_mem_re | ctl_mem_we) & ~ifetch_fault_d;
 
     mmu #(.TLB_ENTRIES (DTLB_ENTRIES), .IS_FETCH (0)) dmmu (
@@ -498,46 +408,24 @@ module riscv_core #(
         .instruction_out (retire_instruction)
     );
 
-    // Retirement is a single-cycle pulse on the cycle the instruction actually
-    // completes. While mem_stall holds EX/MEM - which Wishbone requires, since
-    // the master's outputs must stay stable until ACK - valid_m stays high, and
-    // counting that as a retirement every cycle inflates the instruction count
-    // and would make minstret wrong. This is the same distinction the RV32M
-    // stall invariant checks for.
+    // Retirement pulses once, on the cycle the instruction completes; valid_m
+    // stays high while mem_stall holds EX/MEM.
     assign retire_valid = valid_m & ~mem_stall;
 
     assign dbg_muldiv_stall       = muldiv_stall;
     assign dbg_csr_capture        = csr_capture;
     assign dbg_csr_commit         = csr_commit;
 
-    // mtvec, mepc and mstatus.MIE are read out of the CSR file ready for the
-    // trap logic that comes next: mtvec becomes a third PC source in pc_gen,
-    // mepc the return address, and MIE the global interrupt gate. Nothing
-    // consumes them yet.
-    /* verilator lint_off UNUSEDSIGNAL */
-    wire [`BUS_WIDTH-1:0] csr_unused = {20'd0, csr_addr} ^ {31'd0, trap_is_irq};
-    /* verilator lint_on UNUSEDSIGNAL */
     assign dbg_stage2_pc          = pc_d;
     assign dbg_stage2_instruction = instruction_d;
 
     // ------------------------------------------------------------------------
     // Stage 3: Memory and Writeback
-    // ------------------------------------------------------------------------
-    wire mem_stall;
-
-    // ------------------------------------------------------------------------
-    // The data port is shared three ways
     //
-    // A page table walk is an ordinary read of physical memory, so it goes out
-    // through the same port and the same cache as everything else - page tables
-    // benefit from being cached exactly as much as any other data.
-    //
-    // Priority: the CPU's own access first, then the data walk, then the
-    // instruction walk. The data walker cannot actually contend with the CPU -
-    // it only runs while its load or store is still in Decode/Execute and
-    // stage 3 is bubbled - but the instruction walker can, because a fetch
-    // stalls without stopping a load already in flight. Giving the older
-    // instruction the port keeps that from starving anything.
+    // The data port is shared by stage 3, the data walker and the instruction
+    // walker, in that priority order. Page-table reads go through the data
+    // cache like any other read. Stage 3 is older than any walk in progress,
+    // so serving it first cannot starve either walker.
     // ------------------------------------------------------------------------
     wire [`BUS_WIDTH-1:0] cpu_dmem_addr, cpu_dmem_wdata;
     wire [3:0]            cpu_dmem_wstrb;
@@ -662,7 +550,6 @@ module riscv_core #(
         .trap_return        (trap_return),
         .trap_ret_s         (trap_ret_s),
         .trap_cause         (trap_cause_full),
-        .trap_is_irq        (trap_is_irq),
         .trap_tval          (trap_tval),
         .halted             (halted),
         .trap_error         (trap_error),

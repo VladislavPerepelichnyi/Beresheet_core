@@ -2,18 +2,16 @@
 `define RISCV_CSR_DEFINITIONS_VH
 
 // =============================================================================
-// CSR addresses, encodings and access rules.
+// CSR addresses, privileged-architecture encodings and implementation values.
 //
-// Sources, both in doc/isa/:
-//   Unprivileged manual, chapter 6 "Zicsr"  - the six instructions and Table 7,
-//                                             which decides read vs write
-//   Unprivileged manual, chapter 7 "Zicntr" - cycle, time, instret
-//   Privileged manual, section 2.1          - address mapping conventions
-//   Privileged manual, Table 1              - privilege level encoding
+// References:
+//   Unprivileged manual, "Zicsr"  - the six CSR instructions and the rule
+//                                   deciding whether an access reads or writes
+//   Unprivileged manual, "Zicntr" - cycle, time, instret
+//   Privileged manual, 2.1        - CSR address mapping conventions
 //
-// The include guard is deliberately not RISCV_DEFINITIONS_VH: definitions.vh
-// already uses that name, and sharing it means whichever file is included
-// second is skipped in its entirety, with no error anywhere.
+// The include guard must differ from definitions.vh's: sharing one would make
+// whichever header is included second silently disappear.
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -38,17 +36,10 @@
 // Bit 2 of funct3 separates register forms from immediate forms
 `define CSR_IS_IMM(f3) (f3[2])
 
-// ---------------------------------------------------------------------------
-// Address mapping conventions, Privileged manual section 2.1.
-//
+// Address mapping conventions (Privileged manual 2.1), used by the control
+// unit's access checks:
 //   csr[11:10]  00, 01, 10 = read/write      11 = read-only
 //   csr[9:8]    lowest privilege level that may access the CSR
-//
-// So the two access checks are pure functions of the address, which is why the
-// control unit can make them without asking the CSR file anything.
-// ---------------------------------------------------------------------------
-`define CSR_IS_READ_ONLY(a) (a[11:10] == 2'b11)
-`define CSR_MIN_PRIV(a)     (a[9:8])
 
 // ---------------------------------------------------------------------------
 // Unprivileged counters and timers (Zicntr). Read-only, hence 0xC__.
@@ -69,7 +60,7 @@
 `define CSR_MIMPID    12'hF13
 `define CSR_MHARTID   12'hF14
 
-// Also listed as mandatory. Zero means "no configuration data structure".
+// Zero means "no configuration data structure".
 `define CSR_MCONFIGPTR 12'hF15
 
 // ---------------------------------------------------------------------------
@@ -80,20 +71,13 @@
 `define CSR_MIE       12'h304
 `define CSR_MTVEC     12'h305
 
-// mstatush is listed in the spec's own change log as "the mandatory RV32-only
-// CSR". It carries MBE and SBE, the endianness controls; on a little-endian-only
-// hart both are read-only zero, so the whole register is - but it must exist, or
-// a probe gets an illegal instruction instead of an answer.
+// mstatush is mandatory on RV32. It holds only the endianness controls MBE and
+// SBE, which are read-only zero on a little-endian hart, but it must exist so a
+// probe reads zero instead of trapping.
 `define CSR_MSTATUSH  12'h310
 
-// medeleg (0x302), mideleg (0x303) and mcounteren (0x306) are intentionally
-// absent. The Privileged manual makes them conditional on a lower privilege
-// mode existing, and this hart is M-mode only, so they must not exist and
-// accesses to them must raise an illegal instruction. They arrive with S-mode.
-
 // ---------------------------------------------------------------------------
-// Machine trap handling. Storage exists now; the trap logic that writes mepc,
-// mcause and mtval arrives in the next step.
+// Machine trap handling
 // ---------------------------------------------------------------------------
 `define CSR_MSCRATCH  12'h340
 `define CSR_MEPC      12'h341
@@ -116,14 +100,8 @@
 // ---------------------------------------------------------------------------
 // Supervisor-level CSRs.
 //
-// sstatus, sie and sip are not registers of their own: they are restricted
-// *views* of mstatus, mie and mip. Reading or writing a field of one reads or
-// writes the same bit of the other, which is why they appear in the read mux
-// but own no storage.
-//
-// satp exists and is read-only zero. That is not a placeholder - the spec
-// defines it as how a hart says "no translation modes are supported", and Linux
-// reads it exactly that way. It becomes real state with the MMU.
+// sstatus, sie and sip own no storage: they are restricted views of mstatus,
+// mie and mip.
 // ---------------------------------------------------------------------------
 `define CSR_SSTATUS    12'h100
 `define CSR_SIE        12'h104
@@ -137,33 +115,25 @@
 `define CSR_SATP       12'h180
 
 // ---------------------------------------------------------------------------
-// Trap delegation and counter enables.
-//
-// medeleg/mideleg only exist on a hart with S-mode - the spec is explicit that
-// "in harts without S-mode, the medeleg and mideleg registers should not
-// exist", which is why they arrive with S-mode rather than earlier.
-//
-// mcounteren has the same shape of rule from the other direction: "in harts
-// with U-mode, the mcounteren must be implemented... in harts without U-mode,
-// the mcounteren register should not exist".
+// Trap delegation and counter enables. The spec requires medeleg/mideleg on a
+// hart with S-mode and mcounteren on a hart with U-mode.
 // ---------------------------------------------------------------------------
 `define CSR_MEDELEG    12'h302
 `define CSR_MIDELEG    12'h303
 `define CSR_MCOUNTEREN 12'h306
 
 // ---------------------------------------------------------------------------
-// mstatus field positions, for the subset an M-mode-only hart needs.
+// mstatus field positions. MPP is the two-bit field 12:11.
 //
-// MIE and MPIE are the two-level privilege stack: on a trap MPIE takes MIE's
-// value and MIE clears, so a handler cannot be re-interrupted before it has
-// saved anything. MRET reverses it.
+// xIE/xPIE/xPP form a per-mode stack: on a trap xPIE takes xIE's value and
+// xIE clears, so a handler cannot be re-interrupted before it has saved
+// anything. xRET reverses it.
 // ---------------------------------------------------------------------------
 `define MSTATUS_SIE_BIT  1
 `define MSTATUS_MIE_BIT  3
 `define MSTATUS_SPIE_BIT 5
 `define MSTATUS_MPIE_BIT 7
 `define MSTATUS_SPP_BIT  8         // one bit: 0 = U, 1 = S
-`define MSTATUS_MPP_LSB  11        // two bits, 12:11
 `define MSTATUS_MPRV_BIT 17
 `define MSTATUS_SUM_BIT  18
 `define MSTATUS_MXR_BIT  19
@@ -171,19 +141,15 @@
 `define MSTATUS_TW_BIT   21
 `define MSTATUS_TSR_BIT  22
 
-// Which mstatus bits sstatus may see and change. SUM and MXR belong in this
-// mask too, but they only mean anything once address translation exists, so
-// they read as zero until the MMU makes them real.
-// MXR(19) and SUM(18) join the supervisor's view the moment translation is
-// real: they are the kernel's controls, not the firmware's, and a kernel that
-// cannot set SUM cannot copy to or from user memory.
+// The mstatus bits visible through sstatus. SUM and MXR are the kernel's
+// translation controls: without SUM it cannot copy to or from user memory.
 `define SSTATUS_MASK 32'h000C_0122   // MXR(19) | SUM(18) | SPP(8) | SPIE(5) | SIE(1)
 
 // ---------------------------------------------------------------------------
 // mie / mip field positions, and the matching mcause codes.
 //
-// An interrupt cause is the bit position with mcause bit 31 set. Machine-mode
-// priority order from the Privileged manual is MEI > MSI > MTI.
+// An interrupt's cause code equals its bit position, reported with mcause
+// bit 31 set.
 // ---------------------------------------------------------------------------
 `define IRQ_S_SOFT  1
 `define IRQ_M_SOFT  3
@@ -191,8 +157,6 @@
 `define IRQ_M_TIMER 7
 `define IRQ_S_EXT   9
 `define IRQ_M_EXT   11
-
-`define MCAUSE_IRQ_BIT 31
 
 `define CAUSE_IRQ_S_SOFT  4'd1
 `define CAUSE_IRQ_M_SOFT  4'd3
@@ -202,50 +166,27 @@
 `define CAUSE_IRQ_M_EXT   4'd11
 
 // ---------------------------------------------------------------------------
-// Delegation masks: which bits of medeleg / mideleg are writable.
+// Delegation masks: which bits of medeleg / mideleg are writable. Software
+// discovers the delegatable set by writing all ones and reading back.
 //
-// The spec permits subsetting the delegatable traps, with software discovering
-// the set by writing all ones and reading back. Two rules constrain it: no bit
-// of medeleg may be read-only *one* (anything delegatable must also be able to
-// stay undelegated), and no machine-level interrupt bit of mideleg may be
-// read-only one.
-//
-// mideleg therefore allows only the three supervisor interrupts. The machine
-// ones are read-only zero: an M-mode interrupt delegated to S-mode would be a
-// trap moving to a lower privilege, which never happens.
-//
-// medeleg allows every exception this core can raise except ECALL-from-M, which
-// is unreachable anyway because a trap taken in M-mode is never delegated. The
-// three page-fault causes are included ahead of the MMU: they cannot fire yet,
-// so allowing them changes no behaviour, and it means the MMU work does not
-// begin by discovering that its faults cannot be delegated.
+// mideleg allows only the three supervisor interrupts; machine interrupts are
+// never delegated. medeleg allows every exception this core can raise except
+// ECALL-from-M, which cannot be delegated because a trap taken in M-mode always
+// stays in M-mode.
 // ---------------------------------------------------------------------------
-// satp. Sv32 defines exactly two modes - bare (0) and Sv32 (1) - so the whole
-// register is writable and there is nothing to mask. WARL has nothing to do
-// here, which is the difference between this and every other field above.
-`define SATP_MODE_BIT 31
-
 `define MIDELEG_MASK 32'h0000_0222   // SEI(9) | STI(5) | SSI(1)
 `define MEDELEG_MASK 32'h0000_B35D   // store/instr/load page fault (15,13,12),
                                      // ECALL S(9) U(8), store misaligned(6),
                                      // load misaligned(4), breakpoint(3),
                                      // illegal(2), instr misaligned(0)
 
-// Which mip bits software may write. The machine trio is hardware-driven and
-// read-only: a timer interrupt is cleared by moving mtimecmp, an external one by
-// claiming at the PLIC, a software one through the CLINT's msip. The supervisor
-// trio has no such device behind it - M-mode software raises and clears them
-// directly, which is how OpenSBI delivers a timer tick to a kernel without Sstc.
-`define MIP_SW_MASK  32'h0000_0222   // SEIP(9) | STIP(5) | SSIP(1)
-
 // Counter-enable bits, shared by mcounteren and scounteren.
 `define CTREN_CY 0
 `define CTREN_TM 1
 `define CTREN_IR 2
 
-// Exception causes added by the privileged modes.
-// Sv32 page faults. Four bits is enough: 15 is the largest cause this core can
-// raise, and mcause's remaining bits are zero for every one of them.
+// Exception causes added by the privileged modes and the Sv32 MMU. Four bits
+// suffice: 15 is the largest cause this core raises.
 `define CAUSE_FETCH_PAGE_FAULT 4'd12
 `define CAUSE_LOAD_PAGE_FAULT  4'd13
 `define CAUSE_STORE_PAGE_FAULT 4'd15
@@ -254,22 +195,17 @@
 `define CAUSE_ECALL_S     4'd9
 
 // ---------------------------------------------------------------------------
-// misa: MXL = 1 (RV32) in bits 31:30, plus one bit per extension letter.
-// A is bit 0, I is bit 8, M is bit 12. Read-only here - the extension set is
-// fixed by the hardware, and WARL permits an implementation to ignore writes.
-//
-// This register is not decoration. OpenSBI reads it to decide what the hart can
-// do, and Linux's early boot checks it against what the kernel was built for -
-// so an A implementation that does not advertise itself here is an A
-// implementation nobody will use.
-//
+// misa: MXL = 1 (RV32) in bits 31:30, plus one bit per extension letter
+// (A = 0, I = 8, M = 12, S = 18, U = 20). Read-only: the extension set is fixed,
+// and WARL permits ignoring writes. OpenSBI and Linux both read it to discover
+// what the hart supports. Z* extensions have no misa bit.
 // ---------------------------------------------------------------------------
 `define MISA_VALUE 32'h4014_1101    // RV32 + I + M + A + S + U
 
 // Reported identity. 0 in mvendorid means "non-commercial implementation".
 `define MVENDORID_VALUE 32'h0000_0000
 `define MARCHID_VALUE   32'h0000_0000
-`define MIMPID_VALUE    32'h0000_0003   // stage 3 of the roadmap
+`define MIMPID_VALUE    32'h0000_0003   // implementation revision
 `define MHARTID_VALUE   32'h0000_0000   // single hart
 
 `endif // RISCV_CSR_DEFINITIONS_VH

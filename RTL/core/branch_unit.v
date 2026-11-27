@@ -2,8 +2,7 @@
 
 // =============================================================================
 // Branch condition evaluator for the six RV32I conditional branches.
-// Lives in the Decode/Execute stage next to the ALU, so a branch never has to
-// borrow the ALU result.
+// Purely combinational; sits beside the ALU in Decode/Execute.
 // =============================================================================
 module branch_unit (
     input  wire [2:0]            funct3,
@@ -13,7 +12,7 @@ module branch_unit (
     output reg                   illegal_funct3  // funct3 = 010 / 011 are unused
 );
 
-    wire equal      = (rs1_data == rs2_data);
+    wire equal         = (rs1_data == rs2_data);
     wire less_signed   = ($signed(rs1_data) < $signed(rs2_data));
     wire less_unsigned = (rs1_data < rs2_data);
 

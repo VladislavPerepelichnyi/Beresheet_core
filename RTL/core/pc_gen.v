@@ -17,13 +17,12 @@ module pc_gen #(
     // Pipeline control
     input  wire stall,                            // hold the PC and the BTB
 
-    // Trap redirection. Outranks everything else: a trap must be taken now, and
-    // any misprediction being reported in the same cycle belongs to an
-    // instruction that is about to be flushed anyway.
+    // Trap redirection. Outranks everything else: a misprediction reported in
+    // the same cycle belongs to an instruction that is being flushed.
     input  wire                  trap_take,      // enter the handler
-    input  wire [`BUS_WIDTH-1:0] trap_vector,    // mtvec/stvec 
-    input  wire                  trap_return,    // MRET/SRET
-    input  wire [`BUS_WIDTH-1:0] trap_epc,       // mepc/sepc Machine/Supervisor Exception Program Counter
+    input  wire [`BUS_WIDTH-1:0] trap_vector,    // mtvec or stvec
+    input  wire                  trap_return,    // MRET or SRET
+    input  wire [`BUS_WIDTH-1:0] trap_epc,       // mepc or sepc (return address)
 
     // Resolution feedback from Decode/Execute
     input  wire                  mispredict,
@@ -31,7 +30,7 @@ module pc_gen #(
     input  wire [`BUS_WIDTH-1:0] correct_pc,      // where we should have gone
     input  wire [`BUS_WIDTH-1:0] branch_pc,       // PC of the resolved instruction
 
-    output reg  [`BUS_WIDTH-1:0] pc_out,          // address presented to the Instruction-mem (I cache)
+    output reg  [`BUS_WIDTH-1:0] pc_out,          // fetch address (virtual, to the I-TLB)
     output wire [`BUS_WIDTH-1:0] predicted_pc,    // prediction handed to IF/ID
     output wire                  misaligned_fetch
 );
@@ -56,10 +55,10 @@ module pc_gen #(
     assign misaligned_fetch = (pc_out[1:0] != 2'b00);
 
     // ------------------------------------------------------------------------
-    // PC selection.
-    //  Traps are the primary mechanism for modifying the PC (program counter).
-    //  Therefore, updating the PC based on traps is the top priority.
-    //  In all other cases, the PC is either the "correct PC" or the "predicted PC."
+    // PC selection. Trap entry and return come first and are not blocked by
+    // `stall`: the control unit only asserts them when no bus transaction is
+    // outstanding. Otherwise the PC follows a resolved misprediction or the
+    // BTB's prediction.
     // ------------------------------------------------------------------------
     always @(posedge clk or posedge rst) begin
         if (rst)                 pc_out <= `PC_INIT_VALUE;
@@ -71,25 +70,16 @@ module pc_gen #(
     end
 
     // ------------------------------------------------------------------------
-    // BTB update, deliberately in its own block with no dependence on stall or
-    // on the trap signals.
+    // BTB update, deliberately independent of stall and of the trap signals.
     //
-    // The BTB is a hint, not state: a wrong entry costs one bubble and is then
-    // corrected by the very mechanism that wrote it. So it does not need to be
-    // suppressed when the pipeline is frozen (stage 2 is held, so the inputs
-    // are stable and a repeated update is identical), and it does not need to
-    // be suppressed on a trap (the flushed instruction re-executes after MRET
-    // and would produce the same entry).
+    // The BTB is only a hint: a wrong entry costs one bubble and is corrected
+    // by the same mechanism. While stalled, stage 2 is held, so a repeated
+    // update is identical; after a trap the flushed instruction re-executes and
+    // writes the same entry. Keeping trap_take out of the write enables keeps
+    // the BTB off the critical mem_stall -> trap path.
     //
-    // Separating them matters for timing, not tidiness. Sharing one priority
-    // chain put trap_take - and through it mem_stall, and through that the
-    // EX/MEM valid bit - in front of the BTB's write enables, and that was
-    // measured as the critical path of the whole design.
-    //
-    // The one thing worth guarding is allocation with a misaligned target: a
-    // stale entry pointing at an odd address would predict a misaligned fetch
-    // and manufacture traps. correct_pc's low bits are already here, so the
-    // check is free.
+    // A misaligned target is never allocated, so the BTB cannot predict a
+    // misaligned fetch and manufacture traps.
     // ------------------------------------------------------------------------
     wire target_aligned = (correct_pc[1:0] == 2'b00);
 

@@ -10,13 +10,10 @@
 // worst-case signed-by-unsigned product is -2^31 * (2^32-1), which still fits in
 // a signed 64-bit value.
 //
-// The two stages exist for timing, not for throughput: stage A registers the
-// widened operands and stage B registers the product, which is exactly the
-// input-register / output-register arrangement a DSP48-style block wants. On a
-// target without hard multipliers this infers a combinational array multiplier
-// between the two registers; if that array is too large, swap this module for a
-// sequential shift-add version - the handshake is what muldiv.v depends on, not
-// the internals.
+// The two stages exist for timing, not throughput: stage A registers the
+// widened operands and stage B the product, the input/output register
+// arrangement that hard DSP multipliers expect. muldiv.v depends only on the
+// start/done handshake, so a sequential multiplier could be swapped in.
 //
 // Latency: `done` rises 2 cycles after `start`.
 // =============================================================================

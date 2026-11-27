@@ -2,11 +2,11 @@
 `define RISCV_DEFINITIONS_VH
 
 // =============================================================================
-// This file contains definitions for the RV32IMA opcodes described in the RISC-V Unprivileged ISA Manual 
-// (specifically the "RV32/64G Instruction Set Listings"),
-// control codes for `alu.v`, `imm_gen.v`, and other modules,
-// as well as RV32I exception causes and 
-// definitions for instructions related to virtual memory and traps.
+// Core-wide definitions: datapath sizes, the RV32IMA instruction encodings from
+// the RISC-V Unprivileged ISA Manual ("RV32/64G Instruction Set Listings"), the
+// internal control codes shared by the decoder, ALU and immediate generator,
+// and the base exception causes. CSR addresses and privileged encodings live
+// in CSRdefinitions.vh.
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@
 `define F3_SB   3'b000
 `define F3_SH   3'b001
 `define F3_SW   3'b010
-// RV32M, opcode OP with funct7 = 0000001 (manual page 587)
+// RV32M, opcode OP with funct7 = 0000001
 `define F3_MUL    3'b000
 `define F3_MULH   3'b001
 `define F3_MULHSU 3'b010
@@ -70,7 +70,7 @@
 `define F3_DIVU   3'b101
 `define F3_REM    3'b110
 `define F3_REMU   3'b111
-// RV32A width, chapter 13. Only .W exists on RV32; funct3 = 011 is .D (RV64).
+// RV32A width. Only .W exists on RV32; funct3 = 011 is .D (RV64).
 `define F3_AMO_W  3'b010
 
 // OP / OP-IMM ALU selects
@@ -97,22 +97,19 @@
 // WFI hints that the hart has nothing to do until an interrupt arrives. The
 // spec permits implementing it as a no-op, which is what happens here.
 `define F12_WFI    12'h105
-// SRET returns from a supervisor-mode trap. Same funct3 as the others; told
-// apart by funct12 like MRET.
+// SRET returns from a supervisor-mode trap, told apart by funct12 like MRET.
 `define F12_SRET   12'h102
-// SFENCE.VMA is the exception to that pattern: rs1 and rs2 carry an address and
-// an ASID, so only funct7 identifies it.
+// SFENCE.VMA is the exception: rs1 and rs2 carry an address and an ASID, so
+// only funct7 identifies it.
 `define F7_SFENCE_VMA 7'b0001001
 
 // ---------------------------------------------------------------------------
 // RV32A funct5 (instruction[31:27]).
 //
-// Bits 26 and 25 are aq and rl, the acquire/release ordering hints. They are
-// decoded but carry no behaviour here: a single-hart in-order core with no
-// store buffer is already sequentially consistent, so every
-// ordering these bits can request is already provided. They must still be
-// *accepted* rather than trapped, because that is how real code is compiled -
-// amoswap.w.aq is what a lock acquire looks like.x
+// Bits 26 and 25 are aq and rl, the acquire/release ordering hints. They carry
+// no behaviour here: a single-hart in-order core with no store buffer is
+// already sequentially consistent. They must still be accepted rather than
+// trapped, because compiled code uses them (a lock acquire is amoswap.w.aq).
 // ---------------------------------------------------------------------------
 `define F5_LR       5'b00010
 `define F5_SC       5'b00011
@@ -148,9 +145,8 @@
 `define IMM_B 3'd2
 `define IMM_J 3'd3
 `define IMM_U 3'd4
-// A constant zero. The atomics address memory with rs1 alone - the AMO format
-// is R-type and has no immediate field - so the address ALU needs a zero on
-// operand B rather than a slice of the instruction.
+// Constant zero. The atomics are R-type and address memory with rs1 alone, so
+// the address ALU needs a zero on operand B.
 `define IMM_Z 3'd5
 
 // ---------------------------------------------------------------------------
@@ -171,8 +167,8 @@
 `define WB_PC4 2'd2             // return address, for JAL / JALR
 
 // ---------------------------------------------------------------------------
-// Trap causes, mcause encoding from the Privileged ISA. Only the subset the
-// RV32I stage can raise is listed; the rest arrives with Zicsr.
+// Exception causes (mcause encoding, Privileged ISA). The causes introduced by
+// the privileged modes and the MMU are in CSRdefinitions.vh.
 // ---------------------------------------------------------------------------
 `define CAUSE_INSTR_MISALIGNED 4'd0
 `define CAUSE_ILLEGAL_INSTR    4'd2

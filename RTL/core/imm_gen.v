@@ -1,9 +1,9 @@
 `include "definitions.vh"
 
 // =============================================================================
-// Immediate generator. Bit layouts taken from the instruction format table on
-// page 585 of the Unprivileged ISA manual. Every format is sign-extended from
-// inst[31] except U-type, which is already a full 32-bit value.
+// Immediate generator. Bit layouts follow the instruction format table of the
+// Unprivileged ISA manual. Every format is sign-extended from inst[31] except
+// U-type, which is already a full 32-bit value.
 // =============================================================================
 module imm_gen (
     input  wire [`BUS_WIDTH-1:0] inst,

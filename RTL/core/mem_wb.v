@@ -3,24 +3,15 @@
 // =============================================================================
 // Stage 3: Memory access and Writeback.
 //
-// Turns the pipelined load/store request into a word-aligned, byte-strobed
-// memory transaction, extends load data according to funct3, and selects the
-// value written back to the register file.
+// Turns the pipelined load/store into a word-aligned, byte-strobed memory
+// transaction, extends load data according to funct3, and selects the value
+// written back. The register write port is driven combinationally so the
+// register file's bypass hands the value straight to Decode/Execute.
 //
-// The write port is driven combinationally so that the register file's internal
-// bypass hands the value straight to the instruction sitting in Decode/Execute.
-//
-// This stage also owns the RV32A atomics, for one reason: the read-modify-write
-// has to happen where the memory port is. The pattern is the same as the CSR
-// sequencer - a multi-cycle operation with the pipeline frozen around it, so
-// nothing can observe the half-finished state - but a CSR read-modify-write
-// takes a known two cycles while a memory one takes as long as the bus does.
-// So this sequencer waits on `dmem_ready` twice rather than counting cycles.
-//
-// The pipeline freeze comes free: `mem_stall` already holds every stage, and
-// every other mechanism that has to stay out of the way is already keyed off it
-// - the control unit will not take a trap or an interrupt, and the RV32M unit
-// will not start, while mem_stall is high.
+// The RV32A atomics are sequenced here because the read-modify-write has to
+// happen at the memory port. While a sequence runs, mem_stall freezes the whole
+// pipeline, and the control unit takes no trap and the RV32M unit does not
+// start, so nothing can observe the half-finished state.
 // =============================================================================
 module mem_wb (
     input  wire clk,
@@ -80,31 +71,12 @@ module mem_wb (
     wire is_amo    = is_atomic & ~is_lr & ~is_sc;   // a fetch-and-op
 
     // ------------------------------------------------------------------------
-    // Load reservation.
-    //
-    // One reservation, holding a word address - the smallest set the spec
-    // allows, and the whole set for a machine with no cache lines to speak of.
-    // The spec permits an arbitrarily large set provided it covers the
-    // addressed word, so this is the conservative end of the range: fewer
-    // spurious failures, and the eventuality guarantee for constrained loops
-    // is trivially met because nothing else in this machine writes memory.
-    //
-    // Cleared by:
-    //   any SC          the spec is explicit - success or failure, an SC
-    //                   invalidates the reservation, which is what makes "an SC
-    //                   can only pair with the most recent LR" true.
-    //   a store to it   not required on a single-hart machine, since only
-    //                   another hart's store must fail an SC. Done anyway
-    //                   because it costs one comparator and matches what an
-    //                   implementation tracking a cache line would do. It
-    //                   cannot break a constrained loop, which is forbidden
-    //                   from containing stores between the LR and the SC.
-    //   a trap          also not required - the spec puts that burden on
-    //                   software, which is supposed to SC to a scratch word on
-    //                   a context switch. Done anyway because a preempted
-    //                   sequence resuming into a *successful* SC is a data race
-    //                   that would be very hard to find, and "H traps" is
-    //                   already a permitted way for a constrained loop to end.
+    // Load reservation: a single word address, the smallest set the spec
+    // allows. Cleared by:
+    //   any SC          required: success or failure, an SC invalidates it
+    //   a store to it   not required on a single hart; costs one comparator
+    //   a trap          not required (software should SC on a context switch),
+    //                   but stops a preempted LR/SC pair from succeeding
     // ------------------------------------------------------------------------
     reg                    resv_valid;
     reg [`BUS_WIDTH-3:0]   resv_addr;      // word address, bits 31:2
@@ -112,50 +84,25 @@ module mem_wb (
     wire [`BUS_WIDTH-3:0]  this_word = alu_result[`BUS_WIDTH-1:2];
     wire resv_hit = resv_valid && (resv_addr == this_word);
 
-    // An SC stores only if it still holds the reservation for this word. The
-    // verdict is taken in the sequencer's first phase and used in its second,
-    // so nothing on the bus depends on the comparator.
-    wire sc_fail = is_sc & ~sc_go_q;
-
     // ------------------------------------------------------------------------
-    // Atomic sequencer.
+    // Atomic sequencer, used by SC and the AMOs (LR is a plain load that also
+    // takes a reservation):
     //
-    // Two phases, and both LR/SC and the AMOs go through it:
-    //
-    //   AM_ARM    an AMO issues its read and latches the old value and the
-    //             modified value; an SC evaluates the reservation and latches
-    //             the verdict. No bus write happens in this phase.
+    //   AM_ARM    an AMO issues its read and latches the old and the modified
+    //             value; an SC evaluates the reservation and latches the
+    //             verdict. No bus write happens in this phase.
     //   AM_WRITE  the write goes out, driven entirely from registers, and the
     //             instruction retires when it is acknowledged.
     //
-    // This is Wishbone's RMW cycle (spec section 3.4) seen from the core side:
-    // CYC held across both halves, STB dropped in between as a master wait
-    // state, WE flipped for the second transfer. The bridge holds CYC and
-    // asserts LOCK so the arbiter cannot hand the bus to anyone else in the
-    // gap - which is what makes the operation indivisible rather than merely
-    // consecutive.
+    // This is the Wishbone RMW cycle seen from the core: CYC stays asserted and
+    // LOCK keeps the arbiter from granting the bus to another master between
+    // the two halves.
     //
-    // An SC does not need two phases to be *correct* - it did the reservation
-    // check and the store in one cycle, and every test passed. It needs them to
-    // be fast. The check is a 30-bit compare against the address register, and
-    // its result gates the bus write enable, so it sat in front of the entire
-    // forward bus path: address -> compare -> WE -> arbiter -> decoder -> slave,
-    // and then the read data came back through the writeback mux and the
-    // register-file bypass. That one comparator cost 12 levels of logic and took
-    // the whole design from 27.5 MHz to 27.013 MHz against a 27 MHz constraint -
-    // still closing, with 0.05% to spare, which is not a margin. Registering the
-    // verdict costs one cycle on an instruction that is rare and already sits
-    // inside a retry loop.
-    //
-    // The AMO's result is registered for the same reason and from the same
-    // place: computing it from `amo_old` would put an adder in front of the bus,
-    // so it is computed from the bus read data instead and latched, which ends
-    // at a register rather than starting from one.
-    //
-    // Returning to AM_ARM on completion is safe because completion is exactly
-    // the cycle mem_stall falls, and EX/MEM advances or flushes on that edge -
-    // so the next cycle holds a different instruction. tb_rv32i asserts that
-    // directly, because getting it wrong would silently repeat the operation.
+    // Both the SC verdict and the AMO result are registered so that neither a
+    // comparator nor an adder sits in front of the bus write path; this costs
+    // one cycle on rare instructions. Returning to AM_ARM on completion is safe
+    // because completion is the cycle mem_stall falls, so the next cycle holds
+    // a different instruction.
     // ------------------------------------------------------------------------
     localparam AM_ARM   = 1'b0;
     localparam AM_WRITE = 1'b1;
@@ -165,8 +112,11 @@ module mem_wb (
     reg [`BUS_WIDTH-1:0]  amo_wdata;      // the modified value, ready to send
     reg                   sc_go_q;        // the SC's verdict, registered
 
-    // Instructions the sequencer drives. LR is not one of them: it is a plain
-    // load that also takes a reservation.
+    // An SC stores only if it still holds the reservation for this word. The
+    // verdict is registered in the sequencer's first phase and used in its
+    // second, so the comparator is not on the bus path.
+    wire sc_fail = is_sc & ~sc_go_q;
+
     wire is_seq = is_amo | is_sc;
 
     wire arm_phase   = is_seq & (am_state == AM_ARM);
@@ -189,25 +139,16 @@ module mem_wb (
     //
     // A read for loads, LR, and an AMO's first half. A write for stores, a
     // succeeding SC, and an AMO's second half. A failing SC never touches the
-    // bus - it is the one memory instruction in the ISA that can retire without
-    // a transaction at all.
+    // bus.
     // ------------------------------------------------------------------------
     assign dmem_re = valid_in & mem_re_in & ~write_phase;
     assign dmem_we = valid_in & ((mem_we_in & ~is_sc) |
                                  (write_phase & (is_amo | sc_go_q)));
 
-    // Hold the bus across the two halves.
-    //
-    // The lock is asserted during the read and dropped for the write, because
-    // what it has to say is "another transfer follows in this cycle" - the
-    // arbiter releases the grant on a response only when the lock is low, so
-    // holding it through the final transfer would keep the bus granted with
-    // nothing left to send. That deadlocks the machine: the data port owns a
-    // bus it no longer wants and the instruction port can never fetch again.
-    //
-    // Which is how this was found. The spec's wording matches: the interconnect
-    // holds the grant "until the current MASTER negates LOCK_O or CYC_O", so
-    // the master is expected to negate it on its last transfer, not after.
+    // LOCK means "another transfer follows", so it is asserted during the read
+    // and dropped for the write. The arbiter keeps the grant while LOCK is
+    // high; holding it through the final transfer would leave the bus granted
+    // to a port with nothing to send and starve instruction fetch.
     assign dmem_lock = amo_read_phase;
 
     // For an AMO the stall spans both halves: the read's ACK must not release
@@ -216,11 +157,9 @@ module mem_wb (
                               : ((dmem_we | dmem_re) & ~dmem_ready);
 
     // ------------------------------------------------------------------------
-    // The atomic operation itself. Applied to the value just read and rs2.
+    // The AMO operation, applied to the word returned by the bus and rs2, so
+    // the result is latched at the same edge as the old value.
     // ------------------------------------------------------------------------
-    // Applied to the word just returned by the bus, so the result can be
-    // latched at the same edge as the old value. Reading `amo_old` instead
-    // would be one cycle later and would put this in front of the bus.
     wire [`BUS_WIDTH-1:0] amo_in = dmem_rdata;
 
     reg [`BUS_WIDTH-1:0] amo_result;
@@ -243,17 +182,11 @@ module mem_wb (
     // ------------------------------------------------------------------------
     // Access size and byte strobes.
     //
-    // funct3[1:0] gives the width for loads and stores alike: 00 byte,
-    // 01 halfword, 10 word. That matters because the strobe is not only a
-    // store enable - on a read it is Wishbone's SEL, which tells the slave
-    // "where valid data is expected". A byte-addressed peripheral uses it to
-    // pick a register, so deriving it from the store encodings alone leaves
-    // LBU (100) and LHU (101) falling through to a full-word strobe and
-    // reading the wrong register.
-    //
-    // The atomics are all word accesses (funct3 = 010), so they land in the
-    // default arm; only the AMO write data differs, and it bypasses the shifter
-    // because the operation already produced a whole aligned word.
+    // funct3[1:0] gives the width for loads and stores alike (00 byte,
+    // 01 halfword, 10 word). The strobe is also Wishbone's SEL on reads, which
+    // byte-addressed peripherals use to select a register, so LBU/LHU must get
+    // narrow strobes too. The atomics are word accesses; only the AMO write
+    // data differs, as it is already a whole aligned word.
     // ------------------------------------------------------------------------
     always @(*) begin
         case (funct3[1:0])
@@ -313,22 +246,8 @@ module mem_wb (
                 resv_valid <= 1'b0;
             end
             else if (is_sc && !mem_stall) begin
-                // Any SC clears it, whether it stored or not - but only once
-                // the SC is finished.
-                //
-                // Clearing it on the first cycle instead is wrong in a way that
-                // zero-latency memory cannot show. `sc_go` is what drives the
-                // bus write, and it is derived from the reservation; clear the
-                // reservation while the store is still in flight and STB drops
-                // mid-transaction. Wishbone requires the master to hold its
-                // outputs from STB until ACK, so the store is lost, and the
-                // instruction then retires reporting failure because the
-                // reservation it was checking has gone. A succeeding SC turns
-                // into a failing SC that also loses the write.
-                //
-                // Over the bus this is immediate and total; on the bare core
-                // ready is high in the same cycle, so the whole window does not
-                // exist. It is the third bug of this exact shape in the project.
+                // Any SC clears it, stored or not, but only once the SC has
+                // finished: the bus request must stay stable until ACK.
                 resv_valid <= 1'b0;
             end
             else if (is_lr && dmem_ready) begin
@@ -363,15 +282,10 @@ module mem_wb (
     end
 
     // ------------------------------------------------------------------------
-    // Writeback multiplexer.
-    //
-    // The two atomics that do not write back a bus value:
-    //   AMO  rd gets the value read *before* the modify, and by the cycle this
-    //        retires the bus is carrying the write, so it has to come from the
-    //        latch rather than from dmem_rdata.
-    //   SC   rd gets 0 on success, non-zero on failure. The spec reserves the
-    //        code 1 for "unspecified failure" precisely so an implementation
-    //        can produce it from the multiplexer it already has for SLT.
+    // Writeback multiplexer. Two atomics do not write back the bus value:
+    //   AMO  rd gets the value read before the modify, from the latch, because
+    //        the bus is carrying the write by the time the AMO retires.
+    //   SC   rd gets 0 on success and 1 on failure.
     // ------------------------------------------------------------------------
     assign reg_we    = reg_we_in & valid_in & ~mem_stall;
     assign reg_waddr = rd_addr;

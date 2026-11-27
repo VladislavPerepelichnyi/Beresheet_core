@@ -3,10 +3,9 @@
 // =============================================================================
 // IF/ID pipeline register (Fetch -> Decode/Execute).
 //
-// The "valid" bit is what makes a flush safe. Without it a flushed slot still
-// carries a PC and a prediction, and Decode/Execute compares them and reports a
-// bogus misprediction, which redirects the PC and corrupts the very recovery
-// the flush was performing.
+// The valid bit is what makes a flush safe: without it a flushed slot would
+// still carry a PC and a prediction, and Decode/Execute would report a bogus
+// misprediction that redirects the PC in the middle of the recovery.
 // =============================================================================
 module if_id_reg (
     input  wire clk,
@@ -19,11 +18,9 @@ module if_id_reg (
     input  wire [`BUS_WIDTH-1:0] pc_in,             // PC of instruction_in
     input  wire [`BUS_WIDTH-1:0] predicted_pc_in,   // what Fetch predicted next
 
-    // The fetch could not be translated, so there is no instruction - only the
-    // address that failed. It travels as a poisoned slot: valid, so it reaches
-    // the trap logic and reports its own PC, but carrying nothing worth
-    // decoding. A fetch page fault has to be attributed to the instruction that
-    // could not be fetched, and that instruction never exists.
+    // Instruction page fault. The slot travels as valid but poisoned: it
+    // reaches the trap logic with its own PC, and its instruction bits are
+    // meaningless.
     input  wire                  fault_in,
 
     output reg  [`BUS_WIDTH-1:0] instruction_out,

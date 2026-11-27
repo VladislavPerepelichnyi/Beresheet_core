@@ -3,8 +3,9 @@
 // =============================================================================
 // EX/MEM pipeline register (Decode/Execute -> Mem/Writeback).
 //
-// Carries the ALU result, the store data, and the control signals the last
-// stage needs. pc / instruction are for tracing only.
+// Carries the ALU result (the physical address for memory operations), the
+// store data, and the control signals the last stage needs. The write enables
+// are qualified with valid on entry. pc / instruction are for tracing only.
 // =============================================================================
 module ex_mem_reg (
     input  wire clk,

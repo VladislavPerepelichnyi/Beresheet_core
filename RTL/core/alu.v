@@ -3,8 +3,8 @@
 // =============================================================================
 // Arithmetic / logic unit. Purely combinational.
 //
-// Branch conditions are NOT evaluated here: a single "zero" flag cannot express
-// the six RV32I branch tests. See branch_unit.v.
+// Branch conditions are evaluated separately in branch_unit.v, so a branch
+// never competes with address or result computation for the ALU.
 // =============================================================================
 module alu (
     input  wire [`BUS_WIDTH-1:0] a,              // operand A: rs1, PC or zero
@@ -35,4 +35,3 @@ module alu (
     end
 
 endmodule
-
