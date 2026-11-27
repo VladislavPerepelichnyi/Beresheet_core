@@ -213,9 +213,10 @@ David Harris, *Digital Design and Computer Architecture: RISC-V Edition* (Morgan
 
 ## Verified setups
 
-The installation commands above were tested in clean containers with
-[distrobox](https://distrobox.it). In each one, `make test` (the ISA, unit and SoC tests),
-`compile-bios`, `compile-openSBI`, `compile-bin`, `disassembler` and `qemu` were run from a
+The installation commands above were tested in clean containers: Ubuntu and Fedora with
+[distrobox](https://distrobox.it), Arch with plain Podman (distrobox 1.7 cannot initialise
+current Arch images). In each one, `make test` (the ISA, unit and SoC tests), `compile-bios`,
+`compile-openSBI`, `compile-bin`, `disassembler`, `sim`, `fast_sim` and `qemu` were run from a
 fresh clone:
 
 | Distribution | Compiler prefix | Verilator | QEMU |
