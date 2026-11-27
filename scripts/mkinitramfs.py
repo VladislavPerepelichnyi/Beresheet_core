@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build the initramfs cpio for the custom_riscv board.
+Build the initramfs cpio for the Beresheet board.
 
     mkinitramfs.py <busybox-install-dir> <skeleton-dir> <gen_init_cpio> <out.gz>
 

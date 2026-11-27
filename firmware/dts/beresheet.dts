@@ -17,14 +17,12 @@
  * The memory node declares only the first 7 MiB, so Linux never allocates over
  * OpenSBI in the last one.
  *
- * The build edits this file textually; keep these lines in their current form:
- *   clock-frequency = <24000000>   replaced by the build clock (CPU and UART)
- *   current-speed = <38400>,       replaced by the simulation baud rate
- *   console=ttyS0,38400
- *   rdinit=/init"                  extra simulation boot arguments appended
- *   bootargs =                     linux,initrd-start/end inserted before it
- *   interrupt-parent / interrupts  removed from the serial node for a polled
- *                                  console (UART_POLLED=1)
+ * The build patches the compiled DTB with fdtput (mk/linux.mk,
+ * scripts/run_image.py), so these node paths must stay stable:
+ *   /cpus/cpu@0, /soc/serial@10000000   clock-frequency = SOC_CLK_HZ
+ *   /chosen                              linux,initrd-start/end, bootargs
+ *   /soc/serial@10000000                 current-speed (simulation baud)
+ *   /cpus, /soc/plic@c000000             retargeted for QEMU virt only
  */
 
 / {

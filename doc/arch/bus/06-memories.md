@@ -51,7 +51,7 @@ end
   byte-enabled block RAM.
 - **Initial contents.** `INIT_FILE` is a text file with one 32-bit hex word per
   line, loaded with `$readmemh`. The build produces it from the BIOS binary with
-  `scripts/bin_to_wordhex.py`, padded to the full 8192 words, because Gowin
+  `scripts/translate_bin_to_vmem.py`, padded to the full 8192 words, because Gowin
   will not unroll a zero-fill loop that long.
 - **Read-first.** During a write the module still registers the *old* word onto
   `wb_dat_o`. The master ignores it; the point is that this matches what block

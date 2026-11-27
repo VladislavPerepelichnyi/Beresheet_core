@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-Build a FAT32 SD card image for simulation, and emit it in the sparse form the
-Verilog card model reads.
+Build a FAT32 SD card image for the SoC simulation, in the sparse form
+RTL/sim/soc/sd_model.v reads.
 
-The filesystem itself is made by mkfs.vfat and the partition table by sfdisk,
-deliberately. A test image written entirely by this script would encode the
-same reading of the specification as the parser it is meant to test, so a
-misunderstanding shared by both would pass. Letting the system tools lay out
-the volume means the parser is checked against someone else's interpretation,
-and fsck.vfat at the end checks the two directory entries this script does add.
+The partition table and filesystem are made by sfdisk and mkfs.vfat rather than
+by this script, so the BIOS's FAT32 reader is tested against another
+implementation's reading of the specification; fsck.vfat then checks the
+directory entries this script adds.
 
-Output:
-  build/sd/sdcard.img   the whole image, usable with dd or a loop mount
-  build/sd/sd_lba.hex   sector numbers,  for $readmemh in RTL/sim/sd_model.v
-  build/sd/sd_dat.hex   sector contents, likewise
+The card holds the BIOS's probe file (PROBE.TXT), a file with a long name, and
+a small BOOT.TXT boot set, so the loader can be exercised without a multi-
+megabyte kernel.
+
+Usage:  mksdimage.py <out_dir> [probe_file]
+
+Output in <out_dir>:
+  sdcard.img   the whole image (usable with dd or a loop mount)
+  sd_lba.hex   numbers of the non-zero sectors   (+sd_lba= in tb_soc)
+  sd_dat.hex   contents of those sectors         (+sd_dat= in tb_soc)
 """
 import os
 import struct
@@ -23,7 +27,7 @@ import sys
 IMG_MB      = 48
 SECTOR      = 512
 PART_LBA    = 2048
-OUT_DIR     = "build/sd"
+OUT_DIR     = "build/sim/sd"          # replaced by the command line
 IMG         = os.path.join(OUT_DIR, "sdcard.img")
 MAX_SPARSE  = 64          # sectors the Verilog model can hold
 
@@ -165,7 +169,7 @@ class Volume:
             self.wr(off + 488, struct.pack("<II", 0xFFFFFFFF, 0xFFFFFFFF))
 
 
-def build(secret):
+def build(probe):
     os.makedirs(OUT_DIR, exist_ok=True)
 
     with open(IMG, "wb") as f:
@@ -182,8 +186,8 @@ def build(secret):
     with open(IMG, "r+b") as f:
         v = Volume(f, PART_LBA)
         # NT flag bit 4 marks a lowercase extension: this is what a Linux host
-        # writes for "CLAUDE.txt", a name that fits 8.3 apart from its case.
-        v.add_file("CLAUDE", "TXT", secret, nt_flags=0x10)
+        # writes for "PROBE.txt", a name that fits 8.3 apart from its case.
+        v.add_file("PROBE", "TXT", probe, nt_flags=0x10)
         # A second file that genuinely needs long-name records, so the
         # reassembly path is exercised too.
         v.add_file("KERNEL~1", "BIN", bytes(range(256)),
@@ -269,15 +273,18 @@ def add_boot_set(v):
 
 
 def main():
-    secret_path = sys.argv[1] if len(sys.argv) > 1 else None
-    if secret_path:
-        with open(secret_path, "rb") as f:
-            secret = f.read()
+    global OUT_DIR, IMG
+    if len(sys.argv) not in (2, 3):
+        sys.exit(__doc__)
+    OUT_DIR = sys.argv[1]
+    IMG = os.path.join(OUT_DIR, "sdcard.img")
+    if len(sys.argv) == 3:
+        with open(sys.argv[2], "rb") as f:
+            probe = f.read()
     else:
-        secret = (b"placeholder for simulation: the real CLAUDE.txt lives on "
-                  b"the SD card in the FPGA.\n")
+        probe = b"Probe file on the simulated SD card.\n"
 
-    sectors = build(secret)
+    sectors = build(probe)
     print(f"  image    : {IMG} ({IMG_MB} MB)")
     print(f"  non-zero : {len(sectors)} sectors")
 

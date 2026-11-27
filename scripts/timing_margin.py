@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""Report the real timing margin.
+"""
+Report the timing margin against the clock the board really runs at.
 
-The SDC deliberately constrains tighter than the PLL actually runs, so Gowin's
-own summary quotes a frequency the design is not clocked at. This translates it
-back: the constraint is a target, the real question is how much of the real
-period is left over.
+The SDC constrains the design tighter than the PLL output, so Gowin's summary
+quotes a target rather than the real margin. This reads the longest setup path
+from the timing report and the cpu_clk period from the SDC, and recomputes the
+slack for the real clock period.
 
-The constraint is read from the SDC rather than assumed. An earlier version of
-this script hardcoded 37.037 ns, which was true when it was written and silently
-wrong the moment the constraint was changed - it then reported two different
-margins for two runs whose longest path was identical.
+Usage:  timing_margin.py <clock_hz> <timing_paths> <sdc>
 """
 import re
 import sys
 
-real_hz = int(sys.argv[1]) if len(sys.argv) > 1 else 24_000_000
-paths   = sys.argv[2] if len(sys.argv) > 2 else \
-          'build/fpga/impl/pnr/custom_riscv.timing_paths'
-sdc     = sys.argv[3] if len(sys.argv) > 3 else \
-          'RTL/fpga/tang_nano_20k/tang_nano_20k.sdc'
+if len(sys.argv) != 4:
+    sys.exit(__doc__)
+real_hz, paths, sdc = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 
 try:
     lines = open(paths).read().split('\n')
@@ -38,9 +34,8 @@ except Exception as e:
 
 real_period = 1e9 / real_hz
 
-# Whatever the tool adds on top of the period - clock uncertainty, skew, the
-# capture edge - is the difference between what it required and the period it
-# was asked for. That part does not change when the real clock is slower.
+# What the tool adds to the period (uncertainty, skew) is independent of the
+# period itself, so it carries over to the real clock unchanged.
 allowance = required - constraint
 real_req  = real_period + allowance
 margin    = real_req - arrival

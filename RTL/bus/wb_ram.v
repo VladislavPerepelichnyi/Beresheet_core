@@ -5,7 +5,7 @@
 //
 // ACK and read data are registered on the same edge, one cycle after STB.
 // Byte lanes are written directly from SEL. INIT_FILE is a word-oriented hex
-// image (one 32-bit word per line, scripts/bin_to_wordhex.py), so the same
+// image (one 32-bit word per line, scripts/translate_bin_to_vmem.py), so the same
 // file initialises the simulation memory and the synthesised block RAM.
 // =============================================================================
 module wb_ram #(
