@@ -29,7 +29,7 @@ SOC_SIM     := $(SOC_SIM_DIR)/Vtb_soc
 SOC_SIM_SRC := $(CORE_SRC) $(BUS_SRC) $(SOC_SRC) $(PERIPH_SRC) $(SOC_TB_SRC)
 SOC_VFLAGS  := --binary --timing --top-module tb_soc -Wno-fatal -Werror-PINMISSING \
                -O3 --x-assign fast --x-initial fast -CFLAGS -O2 \
-               --build-jobs $(THREADS)
+               --build-jobs $(JOBS)
 
 $(SOC_SIM): $(SOC_SIM_SRC) $(RTL_HDRS) $(WAIVERS) $(SIM_BUILD)/soc_config.vh
 	@echo '  VERILATE $@'

@@ -7,8 +7,8 @@
  *
  * That handshake is the reason this test exists. It waits for a signal to rise
  * and then fall, and a handshake that waits for something which never happens
- * does not fail loudly - it stops the machine. The bare core has no caches at
- * all, the SoC has two, and FENCE.I has to terminate in both. So the whole
+ * does not fail loudly - it stops the machine. fast_sim has no caches at all
+ * and answers at once, the SoC has two, and FENCE.I has to terminate in both. So the whole
  * point of most of what is below is simply that it is reached.
  *
  * What FENCE.I actually does to the caches cannot be tested from here: these

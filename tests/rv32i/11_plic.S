@@ -1,10 +1,10 @@
 /*
  * 11_plic - the Platform-Level Interrupt Controller.
  *
- * SoC only (`make run-soc TEST=11_plic`): the PLIC is a bus slave, so against
- * the bare core there is nothing at 0x0C00_0000.
+ * Needs the PLIC at 0x0C00_0000 and the LED block's SWIRQ register: runs on
+ * the full SoC and on fast_sim, which models both.
  *
- * The interrupt sources used here are the GPIO block's SWIRQ bits, wired
+ * The interrupt sources used here are the LED block's SWIRQ bits, wired
  * straight to PLIC sources 2..5. They are level sensitive and software drives
  * them directly, which is what makes the interesting cases reachable: two
  * sources pending at once, a source still asserted after it has been claimed,

@@ -1,7 +1,8 @@
 /*
  * 19_mip_seip_rmw - a read-modify-write of mip must not capture the PLIC's SEIP.
  *
- * SoC only (`make run-soc TEST=19_mip_seip_rmw`): needs the PLIC and GPIO.
+ * Needs the PLIC and the LED block's SWIRQ register: runs on the full SoC and
+ * on fast_sim.
  *
  * mip.SEIP reads as (software-writable bit) | (PLIC supervisor context). That
  * OR is right for the value returned in rd, and wrong as the starting point of

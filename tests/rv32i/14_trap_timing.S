@@ -14,7 +14,7 @@
  *
  * The interrupt used is a supervisor software interrupt left *undelegated*, so
  * it traps to M-mode. mip.SSIP is software-writable, which means no CLINT is
- * needed and the test runs identically on the bare core and over the bus.
+ * needed and the test runs identically on fast_sim and over the SoC's bus.
  *
  * Reserved: s5 mepc override for the handler (0 = leave mepc alone),
  *           s6 handler's mstatus snapshot, s7 handler's mscratch snapshot,
@@ -114,7 +114,7 @@ TEST_ENTRY
         # still false, so the trap is detected one instruction later and the
         # write has legitimately already committed. That is not a violation:
         # the interrupt is still taken at an instruction boundary, just a later
-        # one. The bare core never shows it because ready is always high.
+        # one. fast_sim never shows it because its ready is always high.
         #
         # What is guaranteed in both is that the access happens exactly once.
         # csrrw makes that observable: rd receives the value from before the

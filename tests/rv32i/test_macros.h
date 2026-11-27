@@ -1,7 +1,7 @@
 /*
  * Shared scaffolding for the RV32I directed tests.
  *
- * Convention with tb_rv32i.v:
+ * Convention with the simulators (fast_sim, and the SoC testbench):
  *   a0 == 0 at EBREAK  -> PASS
  *   a0 != 0 at EBREAK  -> FAIL, a0 is the id of the check that failed
  *
@@ -35,7 +35,7 @@ _start:
  * Finish the test.
  *
  * mtvec is cleared first, and that is not cosmetic. Traps now vector, so the
- * closing ebreak jumps to whatever mtvec holds. The testbench treats "a trap
+ * closing ebreak jumps to whatever mtvec holds. The simulators treat "a trap
  * taken with mtvec == 0" as the end of the run - a jump to a null handler is
  * the one situation from which no forward progress is possible - so a test that
  * left a real address in mtvec would sail off into it instead of stopping.

@@ -1,9 +1,8 @@
 /*
  * 10_interrupts - timer and software interrupts from the CLINT.
  *
- * This test only means anything inside the full SoC (`make run-soc TEST=10_interrupts`),
- * because the CLINT is a bus slave. Against the bare core there is no interrupt
- * source at all.
+ * Needs a CLINT at 0x0200_0000: runs on the full SoC and on fast_sim, which
+ * models one with the same register map and the same 1 MHz mtime.
  *
  * The two sources are deliberately different in character:
  *

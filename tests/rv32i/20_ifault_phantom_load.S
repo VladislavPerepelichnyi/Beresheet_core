@@ -1,7 +1,9 @@
 /*
  * 20_ifault_phantom_load - a faulted fetch must not issue a data access.
  *
- * SoC only (`make run-soc TEST=20_ifault_phantom_load`).
+ * Runs on the full SoC and on fast_sim. On the SoC the stale word comes from
+ * the instruction cache; fast_sim supplies whatever memory holds at the
+ * address on the fetch port.
  *
  * When a fetch page-faults, IF/ID still latches *something* as the
  * instruction: whatever the instruction cache last put on its output, which
@@ -23,7 +25,7 @@
  * `lw a5,48(s1)`. So the test jumps to an unmapped address whose low ten bits
  * equal those of a load it has just fetched, and that load's own address is
  * unmapped too. A correct core takes the fetch fault (cause 12, mepc = mtval =
- * the target). The old one hung - the testbench reports a stall.
+ * the target). The old one hung, retiring nothing.
  *
  * Reserved: s7 come-home address, s8 last mcause, s9 trap count,
  *           s10 mepc, s11 mtval

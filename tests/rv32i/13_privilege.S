@@ -489,8 +489,8 @@ m_irq:
 #
 # It also cannot read mcause: that is an M-mode register and this runs in S.
 # Which is the reason the "a delegated trap leaves the machine registers alone"
-# property is checked by a structural invariant in the testbench instead of
-# here - see tb_rv32i.v.
+# property is checked by a structural invariant in the simulator instead of
+# here - see RTL/sim/fast/checks.h.
 # =========================================================================
         .align  2
 s_handler:

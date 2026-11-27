@@ -14,8 +14,8 @@
  * addresses are the same memory. If the physical address is being ignored
  * somewhere in the pipeline, they are not.
  *
- * SoC only: it needs one unified memory that both the walker and the fetch
- * path can see.
+ * Needs one unified memory that both the walker and the fetch path see: the
+ * SoC's bus, or fast_sim's single memory model.
  *
  * Reserved: s7 come-home address, s8 last mcause, s9 trap count
  */

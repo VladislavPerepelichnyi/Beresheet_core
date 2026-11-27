@@ -148,7 +148,7 @@ $(OPENSBI_BIN): $(OPENSBI_SRC)/Makefile
 	    echo 'Install gcc-riscv64-linux-gnu, run make linux-toolchain, or set OPENSBI_CROSS.'; \
 	    exit 1; fi; \
 	echo "  OpenSBI with $${cross}gcc"; \
-	env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL make -C $(OPENSBI_SRC) -j$(THREADS) \
+	env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL make -C $(OPENSBI_SRC) -j$(JOBS) \
 	    O=$(abspath $(OPENSBI_OBJ)) CROSS_COMPILE=$$cross $(OPENSBI_FLAGS) >/dev/null
 	@cp $(OPENSBI_OBJ)/platform/generic/firmware/fw_dynamic.bin $@
 	@cp $(OPENSBI_OBJ)/platform/generic/firmware/fw_dynamic.elf $(OPENSBI_DIR)/

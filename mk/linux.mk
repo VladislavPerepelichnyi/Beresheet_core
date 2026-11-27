@@ -59,7 +59,7 @@ linux-kernel:
 	@mkdir -p $(LINUX_BUILD)
 	cp $(LINUX_CFG_DIR)/linux.config $(KERNEL_SRC)/.config
 	$(SUBMAKE) -C $(KERNEL_SRC) ARCH=riscv CROSS_COMPILE=$(KERNEL_CROSS) olddefconfig
-	$(SUBMAKE) -C $(KERNEL_SRC) ARCH=riscv CROSS_COMPILE=$(KERNEL_CROSS) -j$(THREADS) Image
+	$(SUBMAKE) -C $(KERNEL_SRC) ARCH=riscv CROSS_COMPILE=$(KERNEL_CROSS) -j$(JOBS) Image
 	cp $(KERNEL_SRC)/arch/riscv/boot/Image $(LINUX_BUILD)/Image
 	@echo '  -> $(LINUX_BUILD)/Image'
 
@@ -94,7 +94,7 @@ $(BB_BUILD)/.config: $(BB_BUILD)/.extracted $(LINUX_CFG_DIR)/busybox.fragment $(
 $(BB_BIN): $(BB_BUILD)/.config
 	@test -x $(ROOTFS_CROSS)gcc || { echo 'No musl toolchain at $(ROOTFS_CROSS)gcc; run make linux-toolchain.'; exit 1; }
 	$(SUBMAKE) -C $(BB_BUILD) CROSS_COMPILE=$(ROOTFS_CROSS) \
-	    CFLAGS_EXTRA="-Os -no-pie" LDFLAGS="-no-pie -static" -j$(THREADS)
+	    CFLAGS_EXTRA="-Os -no-pie" LDFLAGS="-no-pie -static" -j$(JOBS)
 	$(SUBMAKE) -C $(BB_BUILD) CROSS_COMPILE=$(ROOTFS_CROSS) install >/dev/null
 	$(ROOTFS_CROSS)strip $@
 

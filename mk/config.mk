@@ -70,7 +70,7 @@ GW_SH := $(firstword $(wildcard $(GOWIN_HOME)/bin/gw_sh) \
                      $(shell command -v gw_sh 2>/dev/null))
 
 # --- User options (listed in `make help`) -------------------------------------
-THREADS    ?= $(shell nproc 2>/dev/null || echo 4)
+JOBS       ?= $(shell nproc 2>/dev/null || echo 4)
 PORT       ?= /dev/ttyUSB1
 BAUD       ?= 38400
 SIM_BAUD   ?= 1500000

@@ -33,7 +33,7 @@
  * a division straddling a load, and a remainder immediately after a quotient -
  * because a stall-handshake bug usually needs one specific adjacency.
  *
- * SoC only: the CLINT is a bus slave.
+ * Needs the CLINT: runs on the full SoC and on fast_sim.
  *
  * Reserved: s3/s4/s5 handler scratch, s8 last mcause, s9 interrupt count
  */

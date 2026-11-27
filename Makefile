@@ -31,7 +31,7 @@ include mk/hardware.mk
 include mk/linux.mk
 include mk/tools.mk
 include mk/help.mk
--include mk/fast_sim.mk mk/tests.mk
+include mk/fast_sim.mk mk/tests.mk
 
 .PHONY: test clean distclean
 

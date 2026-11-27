@@ -328,7 +328,7 @@ csr_br_ok:
         #    holds memory, so the CSR access starts and then waits several
         #    cycles before it can commit - and the value it is holding changes
         #    every one of them. Re-reading instead of holding produces a
-        #    perfectly plausible cycle count, so only the testbench's structural
+        #    perfectly plausible cycle count, so only the simulator's structural
         #    check can see the difference; the point of the sequence here is to
         #    create the multi-cycle window for it to look at.
         li      t0, 0x1234

@@ -36,7 +36,8 @@
  * each class with the trap handler counting and returning to a known label.
  * Every loop is bounded, because a test that hangs teaches nothing.
  *
- * SoC only: needs one unified memory the walker and the fetch path both see.
+ * Needs one unified memory that both the walker and the fetch path see: the
+ * SoC's bus, or fast_sim's single memory model.
  *
  * Reserved: s7 come-home address, s8 last mcause, s9 trap count
  */
@@ -67,7 +68,7 @@
         #    as a USER page so U-mode can fetch, load and store in it.
         # ===============================================================
         # The root table and the scratch word are placed by the linker, not at
-        # hardcoded addresses. This RAM is ORIGIN 0x0 LENGTH 32K (soc.ld), so
+        # hardcoded addresses. This RAM is ORIGIN 0x0 LENGTH 32K (test.ld), so
         # 0x00400000 does not exist - stores there go nowhere, satp then points
         # at garbage, and the first translated fetch returns a word that decodes
         # as an illegal instruction. That is what the first version of this test

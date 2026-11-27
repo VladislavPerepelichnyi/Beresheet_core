@@ -16,14 +16,15 @@
  *                 a different address, an intervening SC, an intervening store,
  *                 and an intervening trap.
  *
- * Runs on the bare core and over the bus. The second run is the one that means
- * something: with zero-latency memory the read and write halves of an RMW are
- * adjacent cycles, so nothing can get between them even if the sequencer is
- * wrong. Over Wishbone each half is a real multi-cycle transaction.
+ * Runs on fast_sim and on the full SoC. The SoC run is the one that means
+ * something: with fast_sim's zero-latency memory the read and write halves of
+ * an RMW are adjacent cycles, so nothing can get between them even if the
+ * sequencer is wrong. Over Wishbone each half is a real multi-cycle
+ * transaction.
  *
  * Reserved: s0 scratch base, s1 secondary address, s8 mcause, s9 trap count.
- * Note t6 is CHECK's own scratch register, so it can never hold an address
- * across a check - which is exactly how the first draft of this test broke.
+ * t6 is CHECK's own scratch register, so it must never hold an address across
+ * a check.
  */
 
 #include "test_macros.h"
