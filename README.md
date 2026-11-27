@@ -62,7 +62,7 @@ These commands were verified in clean containers (see [Verified setups](#verifie
 
 ```sh
 sudo apt install build-essential git python3 verilator device-tree-compiler \
-    gcc-riscv64-unknown-elf gcc-riscv64-linux-gnu \
+    fdisk dosfstools gcc-riscv64-unknown-elf gcc-riscv64-linux-gnu \
     qemu-system-misc gdb-multiarch tio openfpgaloader
 ```
 
@@ -70,14 +70,17 @@ sudo apt install build-essential git python3 verilator device-tree-compiler \
 
 ```sh
 sudo dnf install make gcc gcc-c++ git python3 verilator dtc \
-    gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu \
-    qemu-system-riscv gdb tio openFPGALoader
+    util-linux dosfstools gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+    qemu-system-riscv gdb tio
 ```
+
+Fedora does not package openFPGALoader, which is only needed to program the board. Build it
+from [source](https://github.com/trabucayre/openFPGALoader) if you need `load` or `flash`.
 
 ### Arch Linux
 
 ```sh
-sudo pacman -S base-devel git python verilator dtc \
+sudo pacman -S base-devel git python verilator dtc dosfstools \
     riscv64-elf-gcc riscv64-linux-gnu-gcc \
     qemu-system-riscv riscv64-elf-gdb tio openfpgaloader
 ```
@@ -90,6 +93,7 @@ sudo pacman -S base-devel git python verilator dtc \
 | `riscv64-linux-gnu-gcc` | OpenSBI, which must be linked as a position-independent executable; bare-metal `*-elf` linkers cannot do that. |
 | Verilator 5.020 or newer, g++ | `fast_sim`, `sim`, unit tests, lint |
 | `dtc` / `fdtput` | device tree |
+| `sfdisk`, `mkfs.vfat` | the simulated FAT32 SD card used by `sim` and `test-soc` |
 | `qemu-system-riscv32`, gdb | `qemu`, `qemu-gdb`, `gdb` |
 | `tio` (or picocom/minicom) | `console` on the board |
 | `openFPGALoader` | `load`, `flash` |
