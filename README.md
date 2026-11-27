@@ -82,7 +82,7 @@ from [source](https://github.com/trabucayre/openFPGALoader) if you need `load` o
 ```sh
 sudo pacman -S base-devel git python verilator dtc dosfstools \
     riscv64-elf-gcc riscv64-linux-gnu-gcc \
-    qemu-system-riscv riscv64-elf-gdb tio openfpgaloader
+    qemu-system-riscv riscv64-elf-gdb picocom openfpgaloader
 ```
 
 ### What each package is for
@@ -95,7 +95,7 @@ sudo pacman -S base-devel git python verilator dtc dosfstools \
 | `dtc` / `fdtput` | device tree |
 | `sfdisk`, `mkfs.vfat` | the simulated FAT32 SD card used by `sim` and `test-soc` |
 | `qemu-system-riscv32`, gdb | `qemu`, `qemu-gdb`, `gdb` |
-| `tio` (or picocom/minicom) | `console` on the board |
+| `tio`, `picocom` or `minicom` | `console` on the board |
 | `openFPGALoader` | `load`, `flash` |
 
 ### FPGA tools (to build a bitstream)

@@ -45,11 +45,12 @@ bios_preload_DEFS := $(BIOS_SIM_DEFS) $(BOOT_DESC_DEFS)
 $(foreach v,$(BIOS_VARIANTS),$(FW_BUILD)/$(v).flags): $(FW_BUILD)/%.flags: FORCE
 	@$(call update-file,$@,'$(CC) $(BIOS_CFLAGS) $($*_DEFS)')
 
-$(FW_BUILD)/%.elf: $(BIOS_SRC) $(BIOS_HDRS) $(BIOS_LD) $(FW_BUILD)/%.flags
+$(FW_BUILD)/%.elf: $(BIOS_SRC) $(DIV64_SRC) $(BIOS_HDRS) $(BIOS_LD) $(FW_BUILD)/%.flags
 	$(require-cross)
 	@echo '  CC    $@'
 	@$(CC) $(BIOS_CFLAGS) $($*_DEFS) -T $(BIOS_LD) -Wl,--no-warn-rwx-segments \
-	    -Wl,-Map=$(FW_BUILD)/$*.map $(BIOS_SRC) $(LIBGCC) -o $@
+	    -Wl,-Map=$(FW_BUILD)/$*.map $(BIOS_SRC) $(DIV64_SRC) $(LIBGCC) -o $@
+	$(call check-no-rvc,$@)
 	@$(SIZE) $@ | tail -1
 
 $(FW_BUILD)/%.vmem: $(FW_BUILD)/%.elf $(SCRIPTS)/translate_bin_to_vmem.py
@@ -91,13 +92,14 @@ compile-bin: $(BIN_OUT)
 $(BIN_OUT).flags: FORCE
 	@$(call update-file,$@,'$(CC) $(BIN_CFLAGS) $(LINK)' '$(SRC)')
 
-$(BIN_OUT): $(SRC) $(BIN_CRT0) $(BIN_LDS) $(BIN_OUT).flags
+$(BIN_OUT): $(SRC) $(BIN_CRT0) $(DIV64_SRC) $(BIN_LDS) $(BIN_OUT).flags
 	$(require-cross)
 	@mkdir -p $(@D)
 	@echo '  CC    $@'
 	@$(CC) $(BIN_CFLAGS) -L$(SW_DIR)/common -T $(SW_DIR)/common/$(LINK).ld \
 	    -Wl,--no-warn-rwx-segments -Wl,-Map=$(basename $@).map \
-	    $(BIN_CRT0) $(SRC) $(LIBGCC) -o $@
+	    $(BIN_CRT0) $(SRC) $(DIV64_SRC) $(LIBGCC) -o $@
+	$(call check-no-rvc,$@)
 	@$(OBJCOPY) -O binary $@ $(basename $@).bin
 	@$(SIZE) $@ | tail -1
 	@echo '  -> $@, $(basename $@).bin (linked for $(LINK))'

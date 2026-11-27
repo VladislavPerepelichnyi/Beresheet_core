@@ -48,6 +48,16 @@ ARCH_FLAGS := -march=$(MARCH) -mabi=$(MABI)
 LIBGCC = $(eval LIBGCC := $(shell $(CC) -march=rv32im -mabi=ilp32 \
              -print-libgcc-file-name 2>/dev/null))$(LIBGCC)
 
+# 64-bit division helpers built with our -march, linked ahead of libgcc. A
+# distribution libgcc may be rv32imac only (Fedora), and this core has no C
+# extension; check-no-rvc stops the build if compressed code gets in anyway.
+DIV64_SRC := $(SW_DIR)/common/div64.c
+define check-no-rvc
+@if $(OBJDUMP) -d -M no-aliases $(1) | grep -qE '^ *[0-9a-f]+:[[:space:]]+[0-9a-f]{4}[[:space:]]+c\.'; then \
+    echo '$(1): contains compressed (C) instructions, which this core does not implement.'; \
+    echo '  They come from the toolchain library $(LIBGCC).'; rm -f $(1); exit 1; fi
+endef
+
 # Stops a recipe that needs the cross compiler when none was found.
 require-cross = @command -v $(CC) >/dev/null 2>&1 || { \
     echo 'No RISC-V cross compiler found (tried: $(CROSS_CANDIDATES)).'; \
