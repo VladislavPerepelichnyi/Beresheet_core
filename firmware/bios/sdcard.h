@@ -1,24 +1,15 @@
 /*
- * SD card over SPI, driving ZipCPU's sdspi controller.
+ * SD card in SPI mode, through ZipCPU's sdspi controller.
  *
- * The controller does the SPI framing, the command/response protocol and the
- * 512-byte data FIFO. This driver only has to run the card's power-up sequence
- * and then ask for sectors.
+ * The controller handles SPI framing, command/response and a 512-byte FIFO;
+ * this driver runs the card's initialisation and reads single blocks.
  *
- * The power-up sequence is fixed by the SD specification and every step of it
- * exists for a reason:
- *
- *   CMD0    GO_IDLE_STATE. With CS held low this is also what puts a card into
- *           SPI mode at all - a card comes up expecting the native SD protocol.
- *   CMD8    SEND_IF_COND. Asks "do you understand 2.0 voltage signalling?" and
- *           echoes a check pattern back. A version 1 card rejects it, which is
- *           how the two are told apart.
- *   ACMD41  the actual initialisation, and it is a *poll*: the card returns
- *           "still busy" until its internal setup finishes, which can take
- *           hundreds of milliseconds on a cold card.
- *   CMD58   READ_OCR, which carries the CCS bit - the one thing that decides
- *           whether CMD17 wants a block number or a byte address. Getting this
- *           wrong reads the right data from the wrong place by a factor of 512.
+ *   CMD0    GO_IDLE_STATE; with CS low this also selects SPI mode
+ *   CMD8    SEND_IF_COND; a v2 card echoes the check pattern, v1 rejects it
+ *   ACMD41  start initialisation; polled until the card leaves idle, which can
+ *           take hundreds of milliseconds
+ *   CMD58   READ_OCR; the CCS bit says whether CMD17 takes a block number
+ *           (high capacity) or a byte address
  */
 #ifndef SDCARD_H
 #define SDCARD_H

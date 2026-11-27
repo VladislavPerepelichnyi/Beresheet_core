@@ -1,0 +1,138 @@
+/dts-v1/;
+
+/*
+ * Device tree for booting OpenSBI and Linux on the Beresheet SoC
+ * (Tang Nano 20K). Used for the board and, with values patched, for
+ * simulation.
+ *
+ * Memory map during a Linux boot (8 MiB SDRAM):
+ *
+ *     0x8000_0000  kernel Image     RV32 setup_vm needs a 4 MiB aligned kernel,
+ *                                   and only the first such slot fits it
+ *     0x8040_0000  initramfs
+ *     0x806F_0000  device tree
+ *     0x8070_0000  OpenSBI          outside the memory node below
+ *     0x8080_0000  end of SDRAM
+ *
+ * The memory node declares only the first 7 MiB, so Linux never allocates over
+ * OpenSBI in the last one.
+ *
+ * The build edits this file textually; keep these lines in their current form:
+ *   clock-frequency = <24000000>   replaced by the build clock (CPU and UART)
+ *   current-speed = <38400>,       replaced by the simulation baud rate
+ *   console=ttyS0,38400
+ *   rdinit=/init"                  extra simulation boot arguments appended
+ *   bootargs =                     linux,initrd-start/end inserted before it
+ *   interrupt-parent / interrupts  removed from the serial node for a polled
+ *                                  console (UART_POLLED=1)
+ */
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	compatible = "custom,riscv-soc";
+	model = "custom_riscv on Tang Nano 20K";
+
+	chosen {
+		stdout-path = "/soc/serial@10000000";
+		/*
+		 * The rootfs is an initramfs, so there is no root=. earlycon is
+		 * given no baud on purpose: without a clock-frequency to read it
+		 * would assume a 1.8432 MHz UART clock and program a wrong
+		 * divisor, whereas without a baud it keeps the divisor the BIOS
+		 * set. console= does carry the baud; the 8250 driver computes the
+		 * divisor from the serial node's clock-frequency.
+		 *
+		 * rng-seed: the SoC has no entropy source. Without a seed the CRNG
+		 * stays unseeded for the whole boot and every get_random_u32()
+		 * runs a full BLAKE2s extraction, which measurably slows the
+		 * boot. The constant is credited by add_bootloader_randomness()
+		 * and erased from the tree; it is not a secret, and every boot
+		 * draws the same numbers.
+		 */
+		rng-seed = <0x9e3779b9 0x7f4a7c15 0xf39cc060 0x5cedc834
+			    0x1082276b 0xf3a27251 0xf86c6a11 0xd0c18e95>;
+		bootargs = "console=ttyS0,38400 earlycon=uart8250,mmio,0x10000000 loglevel=8 rdinit=/init";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <1000000>;		/* CLINT mtime, 1 MHz */
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "riscv";
+			reg = <0>;
+			/* No "c": the core has no compressed instructions. */
+			riscv,isa = "rv32ima_zicsr_zicntr_zifencei";
+			riscv,isa-base = "rv32i";
+			riscv,isa-extensions = "i", "m", "a", "zicsr", "zicntr", "zifencei";
+			mmu-type = "riscv,sv32";
+			clock-frequency = <24000000>;
+			status = "okay";
+
+			cpu0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+			};
+		};
+	};
+
+	/* 7 of the 8 MiB; the last holds OpenSBI. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x00700000>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		clint@2000000 {
+			compatible = "riscv,clint0";
+			reg = <0x02000000 0x00010000>;
+			interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+		};
+
+		plic: plic@c000000 {
+			compatible = "riscv,plic0";
+			reg = <0x0c000000 0x00400000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			/* Context 0: hart 0 M-mode. Context 1: hart 0 S-mode, the
+			 * one Linux uses. */
+			interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+			riscv,ndev = <7>;
+		};
+
+		/*
+		 * 16550, byte addressed (register N at base + N). clock-frequency
+		 * is the UART input clock. current-speed is required: OpenSBI's
+		 * 8250 driver brings up no console without it.
+		 */
+		serial@10000000 {
+			compatible = "ns16550a";
+			reg = <0x10000000 0x00000020>;
+			reg-shift = <0>;
+			reg-io-width = <1>;
+			clock-frequency = <24000000>;
+			current-speed = <38400>;
+			interrupt-parent = <&plic>;
+			interrupts = <1>;
+			status = "okay";
+		};
+
+		/* LED PWM and software interrupt lines. No Linux driver; listed
+		 * so the address range is described. */
+		led-pwm@11000000 {
+			compatible = "custom,led-pwm";
+			reg = <0x11000000 0x00000040>;
+			status = "okay";
+		};
+	};
+};

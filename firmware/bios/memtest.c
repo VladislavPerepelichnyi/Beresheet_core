@@ -1,26 +1,17 @@
 /*
- * SDRAM test.
+ * SDRAM test. Four passes, address faults first so that a wiring fault is not
+ * reported as a data mismatch:
  *
- * Four passes, each catching a different class of fault. Running them in this
- * order matters: a wiring fault reported as "data mismatch" sends you looking
- * in the wrong place, so the address test comes before the pattern tests.
+ *   1. walking ones      each address line on its own; a stuck or swapped line
+ *                        makes one location alias onto another
+ *   2. address in word   each word holds its own address, catching aliasing
+ *                        anywhere, not just at power-of-two offsets
+ *   3. data patterns     all zeros, all ones, alternating bits and nibbles, for
+ *                        stuck and coupled data bits
+ *   4. byte strobes      byte and halfword stores must leave the other lanes of
+ *                        the word unchanged
  *
- *   1. walking-ones address    every address line toggles on its own, so a
- *                              swapped or stuck address bit shows up as one
- *                              location aliasing onto another
- *   2. address-in-address      each word holds its own address, which catches
- *                              aliasing anywhere in the array, not just on the
- *                              power-of-two boundaries pass 1 visits
- *   3. patterns                0x00000000, 0xFFFFFFFF, 0xAAAAAAAA, 0x55555555,
- *                              and a moving inversion, for stuck and coupled
- *                              data bits
- *   4. byte strobes            byte and halfword stores must leave their
- *                              neighbours alone, which is the specific thing
- *                              the masked-word-write change to the controller
- *                              could have broken
- *
- * Everything is volatile, and reads are read back after a write has definitely
- * retired, so the compiler cannot fold a store into the load that checks it.
+ * All accesses are volatile, so every store and load reaches the bus.
  */
 #include "soc.h"
 #include "uart.h"
@@ -72,13 +63,8 @@ static int test_addr_lines(void)
     return errors;
 }
 
-/*
- * Pass 2: write each word's own index, then read it all back.
- *
- * Strided so the whole 8 MB is covered without taking all day in simulation:
- * STRIDE words apart. On hardware a stride of 1 is affordable; the caller
- * chooses.
- */
+/* Pass 2: write each word's own address, then read it all back. `stride`
+ * words apart: 1 on hardware, larger in simulation. */
 static int test_addr_in_addr(uint32_t stride)
 {
     volatile uint32_t *base = (volatile uint32_t *)SDRAM_BASE;
@@ -128,11 +114,8 @@ static int test_patterns(uint32_t stride)
 }
 
 /*
- * Pass 4: byte and halfword stores must not disturb neighbouring bytes.
- *
- * This is the pass that specifically exercises the masked word write added to
- * the SDRAM controller. A controller that ignored the byte mask and wrote all
- * four lanes would sail through passes 1 to 3 and fail only here.
+ * Pass 4: byte and halfword stores must not disturb neighbouring bytes. A
+ * controller that ignored the byte mask would pass 1 to 3 and fail only here.
  */
 static int test_byte_strobes(void)
 {

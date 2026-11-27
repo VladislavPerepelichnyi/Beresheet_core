@@ -1,10 +1,8 @@
 /*
- * Polled 16550 driver.
+ * Polled 16550 console driver.
  *
- * Polled, not interrupt driven, because the core has no trap mechanism yet -
- * that arrives with Zicsr at roadmap step 6. Every wait here is a spin on a
- * status bit, which is exactly what a boot ROM wants anyway: no state, no
- * handlers, works before anything else is initialised.
+ * Every operation spins on a status bit. That needs no interrupts and no state,
+ * so the console works before anything else has been initialised.
  */
 #include "soc.h"
 #include "uart.h"
@@ -12,15 +10,9 @@
 void uart_init(void)
 {
     /*
-     * Baud divisor. The 16550 divides the bus clock by 16 to make its bit
-     * clock, so divisor = f_clk / (16 * baud).
-     *
-     * At 27 MHz and 38400 baud that is 43.95, so 44, giving 38352 baud - an
-     * error of -0.13%. Worth noting why 38400 rather than 115200: at 27 MHz
-     * the divisor for 115200 would be 14.65, and rounding to 15 gives -2.3%
-     * error, close enough to the limit that a marginal link would be the first
-     * thing to suspect when the board says nothing. 38400 removes that doubt,
-     * and the serial link is the only debug channel we have.
+     * The 16550 divides its input clock by 16 to get the bit clock, so
+     * divisor = CPU_HZ / (16 * BAUD), truncated. At 24 MHz and 38400 baud that
+     * is 39, i.e. 38462 baud (+0.16%).
      */
     const uint32_t divisor = CPU_HZ / (16u * BAUD);
 
@@ -79,7 +71,7 @@ void uart_putdec(uint32_t v)
         return;
     }
     while (v > 0) {
-        buf[n++] = (char)('0' + (v % 10u));   /* uses RV32M divide */
+        buf[n++] = (char)('0' + (v % 10u));
         v /= 10u;
     }
     while (n-- > 0)

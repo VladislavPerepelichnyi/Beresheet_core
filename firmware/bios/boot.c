@@ -1,3 +1,6 @@
+/*
+ * BOOT.TXT loader and fw_dynamic handoff; the descriptor format is in boot.h.
+ */
 #include "boot.h"
 #include "fat32.h"
 #include "sdcard.h"
@@ -5,21 +8,18 @@
 #include "csr.h"
 #include "soc.h"
 
-/* The descriptor is a small text file; a page of it is generous. */
+/* Privilege mode OpenSBI enters the next stage in: 1 = S-mode. */
+#ifndef BOOT_NEXT_MODE
+#define BOOT_NEXT_MODE 1u
+#endif
+
+/* BOOT.TXT must fit in this buffer, with room for a terminating NUL. */
 static char desc[2048];
 
 static int is_space(char c) { return c == ' ' || c == '\t'; }
 
-/*
- * One token from a NUL-terminated line, terminated in place.
- *
- * The first version tokenised across the whole buffer and tried to treat a
- * newline as both a separator and something to leave in place. It left the last
- * token on every line unterminated, so the address ran into the next line and
- * every entry was rejected as malformed - which is what happens when code is
- * compiled but never run. Splitting into lines first makes the two jobs
- * separate and the terminator unconditional.
- */
+/* Next whitespace-separated token of a NUL-terminated line, terminated in
+ * place. Returns 0 at the end of the line. */
 static char *next_tok(char **p)
 {
     char *s = *p;
@@ -60,14 +60,8 @@ static int streq(const char *a, const char *b)
     return *a == *b;
 }
 
-/*
- * Refuse to load anywhere but SDRAM.
- *
- * A bad address in a text file on a removable card is the easiest way to make
- * this machine unbootable: a load over the BIOS's own code in block RAM would
- * destroy the thing doing the loading, halfway through. Checking here costs two
- * comparisons and turns that into a message.
- */
+/* Only SDRAM is a valid destination: a load into boot RAM would overwrite the
+ * running BIOS. Also rejects ranges that wrap around. */
 static int addr_ok(uint32_t addr, uint32_t size)
 {
     uint32_t end = addr + size;
@@ -181,13 +175,8 @@ int boot_load_from_sd(boot_plan_t *plan)
             plan->errors++;
             continue;
         }
-        /*
-         * The first word, as a check that the bytes went where they were told.
-         * A size match only proves the read did not stop early; this catches a
-         * file landing at the wrong address, and it is readable at a glance -
-         * a device tree starts 0xd00dfeed, and a kernel or firmware starts with
-         * a jump. Worth four characters of console.
-         */
+        /* Print the first word read back from the destination, as a visible
+         * check of where the file landed (a device tree starts d00dfeed). */
         uart_puts("ok  first word 0x");
         uart_puthex(*(volatile uint32_t *)addr, 8);
         uart_puts("\n");
@@ -203,10 +192,7 @@ int boot_load_from_sd(boot_plan_t *plan)
         }
     }
 
-    /*
-     * The SBI is the only entry that is strictly required: it is what gets
-     * jumped to. A kernel with no SBI is a file sitting in RAM.
-     */
+    /* The sbi entry is the jump target, so it is the one required role. */
     if (!plan->have_sbi) {
         uart_puts("  no 'sbi' entry - nowhere to jump\n");
         return -1;
@@ -219,19 +205,10 @@ int boot_load_from_sd(boot_plan_t *plan)
     return 0;
 }
 
-/* -------------------------------------------------------------------------
- * Handoff
- *
- * The fw_dynamic protocol, which is how OpenSBI is told what to run next
- * without being rebuilt for it. Machine mode jumps to the SBI with:
- *
- *   a0  hart id
- *   a1  device tree
- *   a2  a fw_dynamic_info describing the stage after that
- *
- * The struct has to survive the jump, so it lives in the BIOS's own block RAM
- * rather than on a stack that the SBI is about to reuse.
- * ------------------------------------------------------------------------- */
+/*
+ * OpenSBI's struct fw_dynamic_info (include/sbi/fw_dynamic.h), version 2. It is
+ * static so that it survives the jump; the SBI reads it from boot RAM.
+ */
 #define FW_DYNAMIC_MAGIC    0x4942534fu    /* "OSBI" */
 #define FW_DYNAMIC_VERSION  2u
 
@@ -248,14 +225,14 @@ void boot_handoff(const boot_plan_t *plan)
 {
     uint32_t hartid = csr_read(mhartid);
 
-    /* Nothing may interrupt what happens after this. */
+    /* Interrupts off: the next stage installs its own handlers first. */
     csr_clear(mstatus, 1u << 3);
     csr_write(mie, 0);
 
     dyn.magic     = FW_DYNAMIC_MAGIC;
     dyn.version   = FW_DYNAMIC_VERSION;
     dyn.next_addr = plan->have_kernel ? plan->kernel_addr : 0;
-    dyn.next_mode = 1;                      /* supervisor */
+    dyn.next_mode = BOOT_NEXT_MODE;
     dyn.options   = 0;
     dyn.boot_hart = hartid;
 

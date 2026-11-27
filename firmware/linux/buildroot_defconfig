@@ -1,33 +1,17 @@
 #
-# Buildroot configuration for the custom_riscv SoC.
+# Buildroot configuration for the Beresheet SoC.
 #
 #   cd $BUILDROOT
 #   make defconfig BR2_DEFCONFIG=<this file>
 #   make
 #
-# Two things drive every choice here: the ISA, and 8 MiB of RAM.
+# ISA: rv32ima with no C extension and no FPU, so ABI ilp32. A userspace built
+# with compressed instructions faults on the first one.
 #
-# --- The ISA -----------------------------------------------------------------
-#
-# rv32ima, and no C. RVC is the default almost everywhere and this core does not
-# have it; a userspace built with compressed instructions faults on the first
-# one. There is no floating-point unit either, so the ABI is ilp32, not ilp32d.
-#
-# --- 8 MiB -------------------------------------------------------------------
-#
-# The kernel Image is about 3 MB after trimming and has to live in the same 8 MiB
-# as everything else, so the rootfs is a gzipped cpio loaded into RAM and
-# unpacked into tmpfs. There is no swap and no block device: the SD controller
-# has no Linux driver, and a page cache over one would not fit anyway.
-#
-# musl, not glibc. glibc's shared objects are several megabytes and a static
-# binary against it is well over half a megabyte before it does anything; musl
-# is a fraction of that. This is the difference between an initramfs that fits
-# and one that does not, and it is why this file exists rather than a patch to
-# the LiteX defconfig.
-#
-# Buildroot rebuilds the whole toolchain when the C library changes, so expect
-# the first build after switching to take a while.
+# Memory: 8 MiB in total, shared with the kernel, so the rootfs is a gzipped
+# cpio unpacked into RAM, and the C library is musl, whose static binaries are
+# a fraction of the size of glibc's. Changing the C library rebuilds the whole
+# toolchain.
 #
 
 BR2_riscv=y
@@ -35,7 +19,7 @@ BR2_riscv_custom=y
 BR2_RISCV_ISA_RVI=y
 BR2_RISCV_ISA_RVM=y
 BR2_RISCV_ISA_RVA=y
-# No BR2_RISCV_ISA_RVC - see above. This is the important line in the file.
+# BR2_RISCV_ISA_RVC deliberately not set.
 BR2_RISCV_32=y
 BR2_RISCV_ABI_ILP32=y
 BR2_RISCV_USE_MMU=y
@@ -55,22 +39,9 @@ BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="@TOPDIR@/firmware/linux/linux.config"
 BR2_LINUX_KERNEL_IMAGE=y
 BR2_LINUX_KERNEL_DTS_SUPPORT=n
 
-# The kernel headers series has to be stated explicitly, and it is not
-# redundant with the custom version above.
-#
-# BR2_KERNEL_HEADERS_AS_KERNEL is the default once BR2_LINUX_KERNEL is set, and
-# it takes the headers from the kernel being built - but it only *selects* a
-# BR2_TOOLCHAIN_HEADERS_AT_LEAST_x_y symbol when the kernel is Buildroot's own
-# latest version. With BR2_LINUX_KERNEL_CUSTOM_VERSION nothing selects one, so
-# BR2_TOOLCHAIN_HEADERS_AT_LEAST falls back to "2.6" while the headers actually
-# installed are 6.9, and Buildroot's own consistency check stops the build:
-#
-#   Incorrect selection of kernel headers: expected 2.6.x, got 6.9.x
-#
-# which arrives after the whole host toolchain has been built. The Kernel
-# Headers help text says as much: "If you choose a custom version of the kernel
-# headers, or choose to use the same sources as the kernel, you'll have to
-# select (below) the series of that kernel."
+# With a custom kernel version, Buildroot cannot infer the kernel headers
+# series and its headers check fails late in the build ("expected 2.6.x, got
+# 6.9.x"). State the series explicitly.
 BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_9=y
 
 # --- userspace: as little as will still boot ---
@@ -86,6 +57,5 @@ BR2_TARGET_GENERIC_ISSUE="Linux on a hand-written RV32IMA core"
 # --- rootfs: a gzipped cpio, loaded into RAM by the BIOS ---
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
-# Nothing else. ext2 was 60 MB, which is seven times the whole machine.
 BR2_TARGET_ROOTFS_EXT2=n
 BR2_TARGET_ROOTFS_TAR=n

@@ -1,3 +1,4 @@
+/* Machine-mode trap handler state, shared with the self tests in main.c. */
 #ifndef TRAP_H
 #define TRAP_H
 
@@ -14,8 +15,7 @@ extern volatile uint32_t last_plic_id;
 extern volatile uint32_t timer_period_us;
 extern volatile int      led_animate;
 
+/* Called from trap_entry in crt0.S; returns the address to resume at. */
 uint32_t trap_handler(uint32_t cause, uint32_t epc, uint32_t tval);
-void     trap_report(void);
-void     trap_init(void);          /* install the vector, in crt0.S terms */
 
 #endif

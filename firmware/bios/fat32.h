@@ -13,8 +13,8 @@
  *               lives in the FAT rather than in the data.
  *   directory   32-byte records, themselves stored in a cluster chain.
  *
- * No writing, no long-name creation, no subdirectory traversal beyond opening
- * by path component - a boot loader needs to find one file and read it.
+ * Read only, root directory only: enough for a boot loader to find a file by
+ * name and read it.
  */
 #ifndef FAT32_H
 #define FAT32_H

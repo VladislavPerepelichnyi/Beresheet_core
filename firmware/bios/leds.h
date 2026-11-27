@@ -1,8 +1,7 @@
 /*
- * LED brightness. Our own MMIO device - one 32-bit register per channel, each
- * holding an 8-bit duty value. The PWM itself is in hardware, so software only
- * has to update brightness at a rate the eye notices rather than at the
- * switching frequency.
+ * LED PWM block: one 32-bit register per channel holding an 8-bit duty value.
+ * The PWM runs in hardware. On the board, LED 0 is a heartbeat driven by the
+ * top level, so the animation uses channels 1 to 5.
  */
 #ifndef LEDS_H
 #define LEDS_H

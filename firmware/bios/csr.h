@@ -1,11 +1,9 @@
 /*
  * Zicsr / Zicntr access helpers.
  *
- * The counters are 64 bits even on RV32 and are read as two halves, so a naive
- * pair of reads can straddle a carry: the low half wraps between the two reads
- * and the result is off by 2^32. The spec's own sample code solves it by reading
- * the high half, then the low half, then the high half again, and retrying if
- * the high half moved. That loop is what read_*64 below implements.
+ * On RV32 the 64-bit counters are read as two halves. read_*64 reads high, low,
+ * high and retries if the high half changed, so a carry between the two reads
+ * cannot produce a value off by 2^32.
  */
 #ifndef CSR_H
 #define CSR_H
@@ -32,7 +30,6 @@
     __asm__ volatile ("csrc " #reg ", %0" :: "r"(__v));   \
 })
 
-/* One macro for all three counters: they differ only in which CSR pair. */
 #define DEFINE_READ64(name, lo, hi)                       \
 static inline uint64_t name(void)                         \
 {                                                         \

@@ -1,9 +1,9 @@
 #
-# BusyBox trimmings for an 8 MiB machine.
+# BusyBox configuration fragment for an 8 MiB machine.
 #
-# Everything here is off because it cannot work or cannot fit, not to be
-# minimal for its own sake. Applets that talk to hardware this SoC does not
-# have are the bulk of it.
+# The initramfs is unpacked into RAM that is never reclaimed, so the size of
+# the uncompressed binary is permanently lost to the kernel. Applets are turned
+# off when they cannot work on this hardware or are not worth their size.
 #
 CONFIG_STATIC=y
 
@@ -39,21 +39,11 @@ CONFIG_FREE=y
 CONFIG_PS=y
 CONFIG_UNAME=y
 
-# -----------------------------------------------------------------------------
-# Everything below was added when the userspace moved from a single test binary
-# to a real BusyBox. An initramfs is unpacked into a ramfs that is never
-# reclaimed, so the *uncompressed* size of this binary is permanent RAM out of
-# the 3440 KiB the kernel leaves free. Every applet here is either impossible on
-# this hardware or not worth its bytes.
-# -----------------------------------------------------------------------------
-
-# tc does not compile at all against current kernel headers: BusyBox 1.37 still
-# references the CBQ qdisc, which Linux deleted from pkt_sched.h. It is a
-# traffic shaper on a board with no network interface, so this is a free fix.
+# tc does not build against current kernel headers (BusyBox 1.37 still uses the
+# CBQ qdisc, removed from pkt_sched.h), and there is no network to shape.
 # CONFIG_TC is not set
 
-# The rest of the networking stack, for the same reason as the applets above:
-# there is no interface for any of it to bind to.
+# The rest of the networking applets: there is no network interface.
 # CONFIG_ARP is not set
 # CONFIG_ARPING is not set
 # CONFIG_BRCTL is not set
@@ -84,8 +74,7 @@ CONFIG_UNAME=y
 # CONFIG_VCONFIG is not set
 # CONFIG_ZCIP is not set
 
-# CONFIG_MODULES is off in the kernel config, so there is nothing to load,
-# unload or list, and no /lib/modules for these to read.
+# The kernel is built without module support.
 # CONFIG_INSMOD is not set
 # CONFIG_RMMOD is not set
 # CONFIG_LSMOD is not set
@@ -93,24 +82,20 @@ CONFIG_UNAME=y
 # CONFIG_DEPMOD is not set
 # CONFIG_MODINFO is not set
 
-# devtmpfs is mounted by rcS and populates /dev from what the kernel actually
-# registered. mdev would be a second, worse implementation of that.
+# /dev is populated by devtmpfs (see /etc/init.d/mountall), not by mdev.
 # CONFIG_MDEV is not set
 
-# The kernel ring buffer is readable with dmesg. Running a syslog daemon to copy
-# it into a file on a tmpfs, in RAM, next to the buffer it came from, is paying
-# twice for one copy.
+# dmesg reads the kernel log directly; a syslog daemon would only copy it to RAM.
 # CONFIG_SYSLOGD is not set
 # CONFIG_KLOGD is not set
 # CONFIG_LOGGER is not set
 # CONFIG_LOGREAD is not set
 
-# One shell is enough, and inittab names ash.
+# ash is the only shell.
 # CONFIG_HUSH is not set
 # CONFIG_SHELL_HUSH is not set
 
-# No block devices and no removable media: nothing to partition, label, spin
-# down or eject.
+# No block devices visible to Linux.
 # CONFIG_BLKID is not set
 # CONFIG_BLOCKDEV is not set
 # CONFIG_EJECT is not set
@@ -126,8 +111,7 @@ CONFIG_UNAME=y
 # CONFIG_UBIATTACH is not set
 # CONFIG_UBIDETACH is not set
 
-# No framebuffer, no keyboard, no virtual terminals - CONFIG_VT is not set in
-# the kernel, so /dev/tty1 does not exist.
+# No framebuffer, keyboard or virtual terminals (CONFIG_VT is off).
 # CONFIG_FBSET is not set
 # CONFIG_FBSPLASH is not set
 # CONFIG_SETCONSOLE is not set
@@ -140,8 +124,7 @@ CONFIG_UNAME=y
 # CONFIG_KBD_MODE is not set
 # CONFIG_SHOWKEY is not set
 
-# Login, passwords and multiple users on a board whose console is a UART with no
-# access control. inittab starts the shell directly; see the comment there.
+# No login: inittab starts the shell directly on the serial console.
 # CONFIG_LOGIN is not set
 # CONFIG_PASSWD is not set
 # CONFIG_SU is not set
@@ -154,8 +137,7 @@ CONFIG_UNAME=y
 # CONFIG_CRYPTPW is not set
 # CONFIG_CHPASSWD is not set
 
-# Compressors. gzip stays because the initramfs is one and being able to read it
-# back on the target is worth 8 KiB; the rest are a different format each.
+# Compressors and package tools other than gzip (the initramfs format).
 # CONFIG_BZIP2 is not set
 # CONFIG_LZOP is not set
 # CONFIG_XZ is not set
@@ -168,31 +150,17 @@ CONFIG_UNAME=y
 # CONFIG_DPKG is not set
 # CONFIG_DPKG_DEB is not set
 
-# BusyBox 1.37 offers x86 SHA-NI acceleration and guards it on the *host*, not
-# the target, so a cross-build for anything else fails in libbb:
-#
-#   hash_md5_sha.c:1316: 'sha1_process_block64_shaNI' undeclared
-#
-# The assembly files are unconditionally assembled and the C reference to them
-# is unconditionally emitted; on riscv32 the former produce nothing. There is no
-# RISC-V equivalent to fall back to, so plain C it is.
+# BusyBox 1.37 enables x86 SHA-NI code based on the host rather than the
+# target, and a riscv32 cross-build then fails in libbb/hash_md5_sha.c.
 # CONFIG_SHA1_HWACCEL is not set
 # CONFIG_SHA256_HWACCEL is not set
 
-# --- musl-specific, and all useless on this board anyway ---------------------
-#
-# hwclock does not compile against musl on a 32-bit target:
-#
-#   hwclock.c:143: 'SYS_settimeofday' undeclared
-#
-# musl on rv32 uses 64-bit time_t, so the kernel only offers
-# SYS_settimeofday_time32 and musl deliberately does not define the bare name.
-# glibc papers over this; musl does not. It is moot regardless - this board has
-# no RTC at all, which is why the epoch starts at zero on every boot.
+# hwclock does not build against musl on rv32 (no SYS_settimeofday with 64-bit
+# time_t), and the board has no RTC.
 # CONFIG_HWCLOCK is not set
 # CONFIG_RTCWAKE is not set
 
-# Network filesystems, for the same reason as the rest of the networking group.
+# Network filesystems.
 # CONFIG_FEATURE_MOUNT_NFS is not set
 # CONFIG_FEATURE_MOUNT_CIFS is not set
 # CONFIG_RDATE is not set

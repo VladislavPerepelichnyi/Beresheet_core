@@ -4,11 +4,9 @@
 
 /* --- byte access -------------------------------------------------------- */
 /*
- * FAT stores everything little-endian and packs fields at whatever offset they
- * fall on - a 32-bit field at offset 0x1BE+8 is not word aligned. This core
- * traps on a misaligned load, so every multi-byte field is assembled from
- * bytes. It also makes the code independent of the host's endianness, which
- * matters here because the SD FIFO already had an opinion about that.
+ * FAT fields are little-endian and often unaligned (a partition entry's LBA is
+ * at 0x1BE + 8). The core traps on misaligned loads, so multi-byte fields are
+ * assembled from bytes.
  */
 static inline uint16_t rd16(const uint8_t *p)
 {
@@ -43,10 +41,8 @@ const char *fat32_error_text(void) { return fat_err; }
 const char *fat32_label(void)      { return vol_label; }
 
 /*
- * One sector of scratch, plus a separate one-sector FAT cache. Walking a chain
- * alternates between reading the FAT and reading data; with a single buffer
- * every step would evict the other and the card would be read twice per
- * cluster. Two buffers is 1 KB of the 32 KB boot RAM and removes that entirely.
+ * A data sector buffer plus a one-sector FAT cache, so that following a cluster
+ * chain does not re-read the FAT sector for every cluster.
  */
 static uint8_t  sec_buf[SD_BLOCK_SIZE];
 static uint8_t  fat_buf[SD_BLOCK_SIZE];
@@ -102,11 +98,8 @@ static uint32_t fat_next(uint32_t cluster)
 /*
  * Validate a candidate boot sector as FAT32 and record the geometry.
  *
- * The type byte in the MBR is a hint, not a fact: cards get repartitioned and
- * the byte does not always follow. Checking the BPB itself is what actually
- * decides, and the deciding test is the cluster count - FAT12/16/32 are told
- * apart by how many clusters the volume has, not by the "FAT32" string, which
- * is only a label and is allowed to be wrong.
+ * The MBR type byte is not trusted. Per the FAT specification the type is
+ * decided by the cluster count, not by the "FAT32" string in the BPB.
  */
 static int parse_bpb(const uint8_t *b, uint32_t part_lba)
 {
@@ -127,9 +120,7 @@ static int parse_bpb(const uint8_t *b, uint32_t part_lba)
     if (fs.sectors_per_cluster == 0 || reserved == 0 || fs.num_fats == 0)
         return -1;
 
-    /* The 16-bit count is zero on any volume too large for it; the 32-bit
-     * field at 0x20 carries the real number in that case. Same idea for the
-     * FAT length, which moves to a 32-bit field on FAT32. */
+    /* A zero 16-bit field means the 32-bit one holds the value. */
     total_sectors = rd16(&b[19]);
     if (total_sectors == 0)
         total_sectors = rd32(&b[32]);
@@ -140,9 +131,8 @@ static int parse_bpb(const uint8_t *b, uint32_t part_lba)
     if (sec_per_fat == 0 || total_sectors == 0)
         return -1;
 
-    /* FAT32 has no fixed-size root directory, so this term is zero - but
-     * computing it the general way is what makes the cluster count, and
-     * therefore the FAT type test below, correct. */
+    /* Zero on FAT32, but needed for a correct cluster count on FAT12/16,
+     * which the type test below relies on. */
     root_dir_sectors = ((uint32_t)rd16(&b[17]) * 32u + fs.bytes_per_sector - 1u)
                        / fs.bytes_per_sector;
 
@@ -162,8 +152,8 @@ static int parse_bpb(const uint8_t *b, uint32_t part_lba)
     if (fs.root_cluster < 2u)
         return -1;
 
-    /* BS_VolLab, 11 bytes, space padded. The root directory may carry a more
-     * authoritative one; see the scan in fat32_mount(). */
+    /* BS_VolLab, 11 bytes, space padded. A label entry in the root directory
+     * takes precedence; see find_volume_label(). */
     {
         int i, n = 0;
         for (i = 0; i < 11; i++)
@@ -220,20 +210,15 @@ int fat32_mount(void)
     if (read_sector(0, sec_buf) != 0)
         return -1;
 
-    /*
-     * A card can be laid out either way: partitioned, or with the filesystem
-     * starting at sector 0 with no partition table at all ("superfloppy").
-     * Sector 0 is a valid BPB in the second case, so try it first - and if it
-     * parses, there is no partition table to look at.
-     */
+    /* Sector 0 is either an MBR or, on an unpartitioned ("superfloppy")
+     * card, the BPB itself. Try the BPB first. */
     if (parse_bpb(sec_buf, 0) == 0) {
         fs.mounted = 1;
     } else {
         uint32_t starts[4];
         uint8_t  types[4];
 
-        /* The partition table has to be copied out before the buffer is reused
-         * to read each candidate's boot sector. */
+        /* Copy the table out: sec_buf is reused for each candidate. */
         for (i = 0; i < 4; i++) {
             starts[i] = rd32(&sec_buf[446 + i * 16 + 8]);
             types[i]  = sec_buf[446 + i * 16 + 4];
@@ -278,7 +263,7 @@ static int name_eq(const char *a, const char *b)
     return *a == *b;
 }
 
-/* "CLAUDE  TXT" (11 bytes, space padded) -> "CLAUDE.TXT" */
+/* "BOOT    TXT" (11 bytes, space padded) -> "BOOT.TXT" */
 static void short_name(const uint8_t *e, char *out)
 {
     int i, n = 0;
@@ -294,15 +279,10 @@ static void short_name(const uint8_t *e, char *out)
 }
 
 /*
- * Long names are stored backwards: the fragments precede the 8.3 record, in
- * reverse order, with a sequence number in the first byte and 0x40 marking the
- * last fragment (which is therefore the first one encountered). Thirteen
- * UTF-16 characters per fragment, split across three ranges of the record
- * because the fields around them were already spoken for by the 8.3 layout
- * this had to stay compatible with.
- *
- * Only the low byte of each character is kept: this is a boot loader reading
- * ASCII filenames, and a partial character is more use in a log than none.
+ * Long-name fragments precede their 8.3 record in reverse order: byte 0 is the
+ * sequence number, with 0x40 marking the last fragment (encountered first).
+ * Each holds 13 UTF-16 characters at the offsets in pos[]. Non-ASCII
+ * characters become '?'.
  */
 static void lfn_fragment(const uint8_t *e, char *dst, int *have)
 {
@@ -310,7 +290,7 @@ static void lfn_fragment(const uint8_t *e, char *dst, int *have)
     uint32_t seq = e[0] & 0x1Fu;
     int      base, i;
 
-    if (seq == 0 || seq > 4)               /* 4 * 13 = 52 chars, our limit */
+    if (seq == 0 || seq > 4)               /* 4 * 13 = 52 characters at most */
         return;
 
     base = (int)(seq - 1u) * 13;
@@ -333,8 +313,8 @@ static void lfn_fragment(const uint8_t *e, char *dst, int *have)
 /* --- directory walking -------------------------------------------------- */
 
 /*
- * Both readdir and find need the same scan, so it exists once. `want` selects:
- * NULL walks and stops at entry number *idx, non-NULL searches by name.
+ * Scan the root directory. With want == NULL, return entry number *idx and
+ * advance it; otherwise return the entry whose long or 8.3 name matches.
  */
 static int scan_root(const char *want, uint32_t *idx, fat32_dirent_t *out)
 {
@@ -385,10 +365,6 @@ static int scan_root(const char *want, uint32_t *idx, fat32_dirent_t *out)
 
                 short_name(e, sname);
 
-                /*
-                 * Match on either name. A file created on a PC usually has
-                 * both, and which one the user types is their business.
-                 */
                 if (want) {
                     if (!name_eq(want, sname) &&
                         !(lfn_len > 0 && name_eq(want, lfn))) {
@@ -459,11 +435,7 @@ int32_t fat32_read(const fat32_dirent_t *f, uint8_t *buf, uint32_t max)
             if (read_sector(cluster_lba(cluster) + s, sec_buf) != 0)
                 return -1;
 
-            /*
-             * The last sector of a file is only partly the file - the rest is
-             * whatever the cluster happened to contain. The directory's size
-             * field is the only thing that says where the data stops.
-             */
+            /* The directory entry's size, not the cluster, ends the file. */
             n = (left < SD_BLOCK_SIZE) ? left : SD_BLOCK_SIZE;
             for (k = 0; k < n; k++)
                 buf[got + k] = sec_buf[k];

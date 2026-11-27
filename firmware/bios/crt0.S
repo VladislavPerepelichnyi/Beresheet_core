@@ -1,10 +1,8 @@
 /*
- * Reset entry for the BIOS.
+ * BIOS reset entry and machine-mode trap entry.
  *
- * Runs at address 0, which is where the core's PC_INIT_VALUE points and where
- * the linker script places .text.init. Nothing is set up yet, so the order
- * below is forced: a stack before any call, then .bss cleared before any C
- * code can read a zero-initialised global.
+ * _start runs at address 0, the core's reset vector. It sets up the stack and
+ * gp, clears .bss, copies .data, installs the trap vector and calls main().
  */
 
     .section .text.init, "ax"
@@ -12,16 +10,11 @@
     .type   _start, @function
 
 _start:
-    /* Registers come out of reset as zero in this core, but a real reset is not
-     * guaranteed to do that on every implementation, so do not depend on it for
-     * anything that matters. */
-
-    /* Stack at the top of the boot RAM, growing down. */
+    /* Stack at the top of boot RAM, growing down. */
     la      sp, __stack_top
 
-    /* Global pointer, for gp-relative access to small data. The .option lines
-     * stop the assembler from relaxing this to a gp-relative form, which would
-     * be circular since gp is what we are setting. */
+    /* gp must be loaded without linker relaxation, which would turn this into
+     * a gp-relative access to gp itself. */
     .option push
     .option norelax
     la      gp, __global_pointer$
@@ -37,9 +30,8 @@ bss_loop:
     bltu    t0, t1, bss_loop
 bss_done:
 
-    /* Copy .data from its load address to where it runs, in case they ever
-     * differ. They do not today, since everything lives in one RAM, but the
-     * loop costs nothing and removes a trap for later. */
+    /* Copy .data to its run address. bios.ld places it in boot RAM, so load
+     * and run addresses are equal and the loop is skipped. */
     la      t0, __data_load_start
     la      t1, __data_start
     la      t2, __data_end
@@ -53,49 +45,32 @@ data_loop:
     bltu    t1, t2, data_loop
 data_done:
 
-    /* Install the trap vector before anything can fault. mtvec MODE stays 0
-     * (Direct), so every trap lands on trap_entry and software dispatches. */
+    /* Direct mode: every trap enters trap_entry. */
     la      t0, trap_entry
     csrw    mtvec, t0
 
-    /* Into C. main's return value stays in a0, which is what the simulation
-     * testbench reads at the ebreak below. */
+    /* main's return value stays in a0, where the simulation testbench reads
+     * the result when it sees the ebreak. */
     call    main
 
-    /* Clear mtvec so the ebreak below actually stops rather than vectoring
-     * back into the handler. A trap with a null vector is the one condition
-     * from which no forward progress is possible, which is exactly what
-     * "finished" should look like to the testbench. */
+    /* With mtvec cleared, the ebreak below cannot vector back into the
+     * handler; the testbench treats it as the end of the run. */
     csrw    mtvec, x0
-
-    /* Halt. With no trap mechanism this freezes the pipeline, which is the
-     * cleanest available "stop" and is what the testbench watches for. */
     ebreak
 
-    /* If a future core resumes past ebreak, do not fall into whatever follows. */
 halt_forever:
     j       halt_forever
 
     .size   _start, . - _start
 
-/* =========================================================================
+/*
  * Trap entry.
  *
- * This part has to be assembly, and the reason is worth being clear about: an
- * interrupt can arrive between any two instructions, and the interrupted code
- * has no idea it happened. So everything the C handler is allowed to clobber
- * must be saved first. The RISC-V ABI says a function may freely destroy the
- * caller-saved registers - ra, t0-t6, a0-a7 - so those are exactly the ones
- * that need saving here. The callee-saved registers (s0-s11) are safe: if the C
- * handler uses them it will save them itself.
- *
- * That is 16 words, and this cost is why interrupt latency is never zero.
- *
- * The stack used is whatever sp happens to hold. That is fine for M-mode-only
- * firmware where there is one stack. The moment U-mode exists, sp could belong
- * to user code and might be garbage - which is what mscratch is for: swap in a
- * known-good handler stack with a single csrrw before touching memory.
- * =========================================================================*/
+ * A trap can arrive between any two instructions, so every register the C
+ * handler may clobber is saved first: ra, t0-t6 and a0-a7, the caller-saved set
+ * of the RISC-V ABI. s0-s11 are preserved by the handler itself. The handler
+ * runs on the interrupted stack, which is the BIOS's only stack.
+ */
     .section .text, "ax"
     .align  4
     .global trap_entry
@@ -119,7 +94,7 @@ trap_entry:
     sw      a6,  56(sp)
     sw      a7,  60(sp)
 
-    /* trap_handler(mcause, mepc, mtval) -> the address to resume at */
+    /* trap_handler(mcause, mepc, mtval) returns the address to resume at. */
     csrr    a0, mcause
     csrr    a1, mepc
     csrr    a2, mtval
@@ -144,8 +119,7 @@ trap_entry:
     lw      a7,  60(sp)
     addi    sp, sp, 64
 
-    /* MRET restores MIE from MPIE and jumps to mepc. Everything the trap
-     * pushed is popped by this one instruction. */
+    /* mret restores MIE from MPIE and the privilege mode from MPP. */
     mret
 
     .size   trap_entry, . - trap_entry

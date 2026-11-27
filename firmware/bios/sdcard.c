@@ -2,9 +2,8 @@
 #include "uart.h"
 
 /*
- * Controller registers. Four words, and the bit definitions are the
- * controller's rather than the SD specification's - the command register mixes
- * the SD command number in its low bits with control flags above it.
+ * sdspi registers. The command register holds the SD command number in its low
+ * bits and controller flags above it; the bit definitions are the controller's.
  */
 #define SD_CMD      (SD_BASE + 0x00u)
 #define SD_DATA     (SD_BASE + 0x04u)
@@ -26,10 +25,13 @@
 #define SD_GO_IDLE      (SD_REMOVED | SD_CLEARERR | SD_GO_CMD)          /* CMD0  */
 #define SD_READ_SECTOR  (SD_GO_CMD | SD_CLEARERR | SD_FIFO_OP | 17u)    /* CMD17 */
 
-/* Aux word: 512-byte sectors, and the clock divider in the low bits. */
+/*
+ * Aux word: 512-byte sectors, and the clock divider in the low bits.
+ * SPI clock = CPU_HZ / (2 * (divider + 1)).
+ */
 #define SD_SECTOR_512B  0x090000u
-#define SD_SPEED_SLOW   (CPU_HZ / 200000u - 1u)   /* ~200 kHz for the handshake */
-#define SD_SPEED_FAST   1u                        /* CPU_HZ / 2, 12 MHz at 24    */
+#define SD_SPEED_SLOW   (CPU_HZ / 200000u - 1u)   /* 100 kHz, for initialisation */
+#define SD_SPEED_FAST   1u                        /* CPU_HZ / 4: 6 MHz at 24 MHz */
 
 static int         sd_ok;
 static int         sd_hc;
@@ -42,18 +44,12 @@ uint32_t    sd_last_status(void) { return sd_status; }
 const char *sd_error_text(void)  { return sd_err; }
 
 /*
- * Every command is "write the argument, then write the command", and then wait.
+ * A command is "write the argument, write the command, wait for BUSY to clear".
  *
- * The wait is for BUSY to clear, not for the error flag to appear. Bailing out
- * the moment an error shows leaves the controller mid-command, and the next
- * write to the data register is then ignored - it only latches while the
- * controller is idle. That turns one failed command into a driver that cannot
- * be restarted, which is a nastier failure than the one it was reacting to.
- *
- * The guard is still there because a card that is absent, wedged or wired
- * wrongly must not hang the BIOS. The controller's own watchdog fires first
- * under normal circumstances - about 175 ms - so reaching the guard means the
- * controller itself is stuck.
+ * The wait does not stop early on the error flag: the controller ignores writes
+ * to the data register until it is idle, so leaving mid-command would make the
+ * next command fail too. The controller's own watchdog (about 175 ms) normally
+ * ends a stuck command; the guard only catches a stuck controller.
  */
 static uint32_t sd_wait(void)
 {
@@ -121,10 +117,8 @@ int sd_init(void)
         return -1;
     }
 
-    /*
-     * ACMD41, polled. HCS = 1 says we can handle a high-capacity card; a card
-     * that needs longer than this simply is not going to answer.
-     */
+    /* ACMD41, polled until the card leaves idle. HCS = 1: high-capacity
+     * cards are supported. */
     for (tries = 0; tries < 20000; tries++) {
         sd_cmd(SD_ACMD55, 0);
         r = sd_cmd(SD_GO_CMD + 41u, 0x40000000u);
@@ -177,11 +171,9 @@ int sd_read_block(uint32_t lba, uint8_t *buf)
     }
 
     /*
-     * The FIFO hands back 32-bit words with the first byte off the card in the
-     * most significant lane - the controller shifts in MSB first and does not
-     * byte swap. Everything above this driver expects a plain byte array in
-     * memory order, and FAT is little-endian, so the swap happens here once
-     * rather than at every field access.
+     * The FIFO returns 32-bit words with the first byte from the card in the
+     * most significant lane. Unpack to a byte array in card order here, once,
+     * so the callers see plain memory order.
      */
     for (i = 0; i < SD_BLOCK_SIZE / 4; i++) {
         w = mmio_r32(SD_FIFO_A);

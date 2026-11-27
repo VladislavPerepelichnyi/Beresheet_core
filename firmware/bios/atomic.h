@@ -1,16 +1,9 @@
 /*
- * RV32A atomics, as inline assembly.
+ * RV32A atomics as inline assembly.
  *
- * GCC's __atomic builtins would compile to exactly these instructions, but
- * writing them out means the BIOS tests the instructions the hardware
- * implements rather than whatever the compiler decided to emit - and with -Os
- * it will happily turn a single-threaded atomic into a plain load and store,
- * which would make the self test vacuous.
- *
- * The ordering suffixes are included where real code would use them. This core
- * needs no extra ordering to honour them - one hart, in order, no store buffer,
- * no cache - but they have to assemble and execute, because that is the form
- * every lock in every real program is written in.
+ * Written out rather than using the __atomic builtins so that the self test
+ * exercises exactly these instructions; the compiler is free to lower a
+ * single-threaded builtin to a plain load and store.
  */
 #ifndef ATOMIC_H
 #define ATOMIC_H
@@ -74,11 +67,8 @@ static inline uint32_t sc_w(volatile uint32_t *p, uint32_t v)
 }
 
 /*
- * Compare-and-swap, built from LR/SC exactly as the spec's Listing 2 does.
- * Returns 1 if it swapped.
- *
- * The retry loop is the part that matters: an SC is permitted to fail
- * spuriously, so any correct use has to be prepared to go round again.
+ * Compare-and-swap from LR/SC, as in the ISA manual's example. Returns 1 if it
+ * swapped. SC may fail spuriously, hence the retry loop.
  */
 static inline int cas(volatile uint32_t *p, uint32_t expect, uint32_t desired)
 {

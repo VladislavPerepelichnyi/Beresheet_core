@@ -1,19 +1,15 @@
-# BusyBox inittab for the custom_riscv board.
+# BusyBox inittab.
 #
-# The format is  <tty>:<runlevel>:<action>:<command>  and BusyBox ignores the
-# runlevel field entirely. An empty tty field means /dev/console, which is the
-# only terminal this machine has.
+# Format: <tty>:<runlevel>:<action>:<command>. BusyBox ignores the runlevel; an
+# empty tty means /dev/console, the board's only terminal.
 #
-# There is deliberately no getty and no login here. getty exists to reset a
-# terminal's line discipline and hand off to /bin/login, and login exists to
-# check a password; on a board whose only console is a UART soldered to a USB
-# bridge, both are ceremony that can only fail. The leading dash on the shell
-# makes it a login shell, so it reads /etc/profile.
-#
+# No getty or login: the console is a UART with no access control, so the shell
+# is started directly. The leading '-' makes it a login shell, which reads
+# /etc/profile.
+
 ::sysinit:/etc/init.d/rcS
 
-# respawn, not once: leaving the shell gives you a new one instead of a dead
-# machine that still has to be power-cycled.
+# respawn: exiting the shell starts a new one.
 ::respawn:-/bin/sh
 
 ::shutdown:/bin/umount -a -r

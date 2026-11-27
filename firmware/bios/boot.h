@@ -1,29 +1,27 @@
 /*
- * Boot descriptor loader, in the spirit of LiteX's boot.json.
+ * Boot from SD card, driven by a descriptor file.
  *
- * The BIOS has no idea what it is booting. It mounts the first FAT32 partition,
- * reads a text file that says which files go where, copies them into SDRAM and
- * hands over. Changing what the machine boots is then editing a text file on
- * the card, not rebuilding the BIOS - which is the whole point.
+ * The BIOS mounts the first FAT32 filesystem on the card, reads BOOT.TXT from
+ * the root directory, copies each file it names into SDRAM, and jumps to the
+ * SBI firmware. What to boot is changed by editing BOOT.TXT, not the BIOS.
  *
- * Format, one entry per line, '#' starts a comment:
+ * BOOT.TXT holds one entry per line: role, file name, load address in hex.
+ * Blank lines and lines starting with '#' are ignored; CR LF is accepted.
  *
  *     # role   file             address
  *     kernel   Image            0x80000000
- *     sbi      fw_dynamic.bin   0x80400000
- *     dtb      rv32.dtb         0x80500000
- *     load     initrd.cpio      0x80600000
+ *     load     rootfs.gz        0x80400000
+ *     dtb      custom.dtb       0x806F0000
+ *     sbi      fw_dynamic.bin   0x80700000
  *
- * The roles are what turn a list of files into a handoff:
+ * Roles:
  *
- *     sbi     where to jump, in machine mode
- *     kernel  what the SBI should enter next, in supervisor mode
- *     dtb     the device tree, passed in a1
- *     load    copied in and otherwise ignored - an initrd, a splash, anything
+ *     sbi     entered in M-mode (required)
+ *     kernel  next stage, entered by the SBI in S-mode
+ *     dtb     device tree, passed in a1
+ *     load    loaded and otherwise unused, e.g. an initramfs
  *
- * A role is explicit rather than inferred from the filename because inferring
- * it is the kind of cleverness that fails silently on a card somebody else
- * prepared.
+ * Every file must lie entirely inside SDRAM.
  */
 #ifndef BOOT_H
 #define BOOT_H
@@ -42,12 +40,17 @@ typedef struct {
 } boot_plan_t;
 
 /*
- * Mount, read the descriptor, load everything it names. Returns 0 if the plan
- * is complete enough to boot. Does not jump anywhere - the caller decides.
+ * Initialise the card, mount it, read the descriptor and load every file it
+ * names. Returns 0 if all entries loaded and there is an sbi entry. Does not
+ * jump.
  */
 int boot_load_from_sd(boot_plan_t *plan);
 
-/* Hand over: a0 = hartid, a1 = dtb, a2 = the fw_dynamic struct. Never returns. */
+/*
+ * Jump to plan->sbi_addr in M-mode using OpenSBI's fw_dynamic protocol:
+ * a0 = hart ID, a1 = plan->dtb_addr, a2 = struct fw_dynamic_info naming
+ * plan->kernel_addr as the next stage. Never returns.
+ */
 void boot_handoff(const boot_plan_t *plan);
 
 #endif
