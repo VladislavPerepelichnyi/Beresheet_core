@@ -30,8 +30,8 @@
 / {
 	#address-cells = <1>;
 	#size-cells = <1>;
-	compatible = "custom,riscv-soc";
-	model = "custom_riscv on Tang Nano 20K";
+	compatible = "beresheet,soc";
+	model = "Beresheet on Tang Nano 20K";
 
 	chosen {
 		stdout-path = "/soc/serial@10000000";
@@ -130,7 +130,7 @@
 		/* LED PWM and software interrupt lines. No Linux driver; listed
 		 * so the address range is described. */
 		led-pwm@11000000 {
-			compatible = "custom,led-pwm";
+			compatible = "beresheet,led-pwm";
 			reg = <0x11000000 0x00000040>;
 			status = "okay";
 		};

@@ -78,6 +78,9 @@ int boot_load_from_sd(boot_plan_t *plan)
     char    *p;
     uint32_t line = 0;
 
+    /* Zero the addresses too: a descriptor without a kernel or dtb entry
+       must hand off 0, not whatever the caller's stack held. */
+    plan->sbi_addr = plan->kernel_addr = plan->dtb_addr = 0;
     plan->have_sbi = plan->have_kernel = plan->have_dtb = 0;
     plan->loaded = plan->errors = 0;
 

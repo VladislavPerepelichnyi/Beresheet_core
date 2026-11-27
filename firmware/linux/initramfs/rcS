@@ -17,6 +17,6 @@ mount -t proc proc /proc
 echo "rcS: setting hostname" > /dev/kmsg
 # The hostname applet is disabled in busybox.fragment; this is the same
 # syscall without a fork.
-echo custom-riscv > /proc/sys/kernel/hostname
+echo beresheet > /proc/sys/kernel/hostname
 
 echo "rcS: done, starting shell" > /dev/kmsg

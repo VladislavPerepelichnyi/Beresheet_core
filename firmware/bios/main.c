@@ -35,7 +35,7 @@
 
 /* File printed by the SD probe if present. The simulated card built by
  * scripts/mksdimage.py contains it, which exercises fat32_read(). */
-#define SD_PROBE_FILE "CLAUDE.TXT"
+#define SD_PROBE_FILE "PROBE.TXT"
 
 /* sd_init() attempts in the SD probe; some cards need several after power-up. */
 #define SD_INIT_ATTEMPTS 10

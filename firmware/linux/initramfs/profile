@@ -2,7 +2,7 @@
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export HOME=/root
 export TERM=vt100
-export PS1='custom-riscv:\w # '
+export PS1='beresheet:\w # '
 
 echo "profile: shell is up, this line came via the tty" > /dev/kmsg
 echo ""
