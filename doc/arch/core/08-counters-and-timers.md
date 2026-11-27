@@ -48,9 +48,8 @@ CLINT, not as a CSR, so that every hart in a multi-hart system sees the same
 time. The CLINT divides the 24 MHz clock by 24 to tick `mtime` at exactly
 1 MHz, and drives the 64-bit value to the core on the `mtime` input. The `time`
 CSR is a read-only *view* of that wire. The device tree tells Linux
-`timebase-frequency = <1000000>`. Running the core at 18 MHz instead (the
-`CLK18` build option) changes the divider, not the tick rate, so time stays
-correct. See Part III, [peripherals](../peripherals/README.md), for the CLINT
+`timebase-frequency = <1000000>`. A different system clock would change the
+divider (derived from `SOC_CLK_HZ`), not the tick rate. See Part III, [peripherals](../peripherals/README.md), for the CLINT
 itself.
 
 ## 8.2 Who may read them

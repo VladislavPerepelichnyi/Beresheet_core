@@ -249,7 +249,13 @@ void boot_handoff(const boot_plan_t *plan)
     uart_puts("\n");
     uart_flush();
 
+    /*
+     * The images were written through the write-back D-cache, while I-cache
+     * misses read SDRAM directly. fence.i writes the D-cache back and
+     * invalidates the I-cache, so the next stage fetches what was loaded.
+     */
     __asm__ volatile (
+        "fence.i\n"
         "mv   a0, %0\n"
         "mv   a1, %1\n"
         "mv   a2, %2\n"

@@ -103,9 +103,11 @@ code is compiled: `amoswap.w.aq` is what a lock acquire looks like.
   specification classifies an AMO as a store for that purpose. (The decoder
   raises `mem_we` for SC and uses `amo_is_rmw` for AMOs to get this right.)
 - **Page faults.** Translation happens in stage 2 like any load or store
-  ([chapter 6](06-virtual-memory.md)). `LR.W` is checked as a load and `SC.W` as
-  a store. AMOs are currently translated as *loads*; see
-  [chapter 10](10-limitations.md#103-known-issues) for why that is a known issue.
+  ([chapter 6](06-virtual-memory.md)). `LR.W` is checked as a load. `SC.W` and the
+  AMOs are checked as stores, even though an AMO's first bus access is a read:
+  the page must be writable with D = 1, and a fault reports a store/AMO page
+  fault (cause 15). In `riscv_core.v` the data MMU's `req_write` is
+  `ctl_mem_we | amo_write_d`.
 
 ## Where this is in the RTL
 

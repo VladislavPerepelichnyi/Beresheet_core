@@ -75,9 +75,11 @@ The BIOS disables interrupts and jumps to OpenSBI using OpenSBI's
 | `a1` | address of the device tree |
 | `a2` | address of a `fw_dynamic_info` structure in boot RAM: magic `"OSBI"`, version 2, `next_addr` = the kernel, `next_mode` = S |
 
-The core is still in M with translation off. Note that the BIOS jumps to code it
-has just written through the write-back data cache; see
-[10.3](10-limitations.md#103-known-issues) for why that deserves a `FENCE.I`.
+The core is still in M with translation off. The images were written through
+the write-back data cache, but instruction-cache misses read SDRAM directly, so
+the BIOS executes `FENCE.I` immediately before the jump: it writes the data
+cache back and invalidates the instruction cache
+([7.7](07-caches.md#77-fencei-making-stores-visible-to-fetch)).
 
 ## 9.3 OpenSBI (machine mode)
 

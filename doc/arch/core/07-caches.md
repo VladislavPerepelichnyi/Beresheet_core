@@ -174,11 +174,8 @@ agree, and Beresheet implements it by brute force:
    has started. To guarantee the rise, the SoC drives `cache_flush_busy` high
    combinationally in the request cycle itself.
 
-A flush visits all 64 lines and writes back at most 64 x 16 words, so it is
-bounded. The sequencer has a watchdog: after about two million cycles it gives
-up, records its state in a status word visible through the LED block, and lets
-the core continue. A wrong answer that leaves the machine running is easier to
-debug than a silent hang.
+A flush visits all 64 lines and writes back at most 64 x 16 words, so it always
+completes in bounded time.
 
 ## 7.8 Atomics, page walks and the caches
 
@@ -195,7 +192,7 @@ debug than a silent hang.
 |---|---|---|
 | Cache module: geometry, windows, arrays, PLRU, FSM | `RTL/core/cache.v` | `cache_vipt`, `CACHEABLE_BASE/SIZE`, `CACHEABLE2_BASE/SIZE`, `tag_ram`, `valid_ram`, `dirty_ram`, `plru_tree`, `data_ram`, `victim_way`, `S_*` states, `cpu_ready`, `flush_busy` |
 | Instances, window parameters, `DCACHE`/`ICACHE` switches | `RTL/soc/soc_wb.v` | `g_dcache`, `g_icache` |
-| FENCE.I sequencer and watchdog | `RTL/soc/soc_wb.v` | `fl_state`, `d_req`, `i_req`, `cache_flush_busy`, `fl_timer`, `fl_status` |
+| FENCE.I sequencer | `RTL/soc/soc_wb.v` | `fl_state`, `d_req`, `i_req`, `cache_flush_busy` |
 | FENCE.I in the core | `RTL/core/control_unit.v` | `is_fence_i`, `fence_seen`, `fence_i_req`, `fence_stall` |
 | Unit testbench | `RTL/sim/unit/tb_dcache.v` | |
 | Test | `tests/rv32i/15_fence.S`; the BIOS's Zifencei self-test | |

@@ -49,41 +49,8 @@ performance or differ from what a larger core would do:
 
 ## 10.3 Known issues
 
-These were found while writing this book, by reading the RTL. They are listed
-so that a reader is not surprised by them; none of them prevents the current
-Linux boot.
-
-### AMOs are translated as loads
-
-The data MMU's `req_write` input is driven by the decoder's `mem_we`, which is
-set for stores and `SC.W` but not for the AMOs (an AMO's first bus access is a
-read, so the decoder raises `mem_re` only). As a result an AMO is
-permission-checked as a load:
-
-- an AMO to a page with R = 1 and W = 0 is allowed, and its write half then
-  modifies a read-only page. Copy-on-write pages after `fork()` are mapped
-  exactly like that, so an AMO from user space to such a page would write the
-  shared physical page instead of faulting;
-- the D bit is not required, so an AMO can dirty a page without the kernel
-  being told;
-- a page fault on an AMO reports cause 13 (load) instead of 15 (store/AMO),
-  which the privileged specification requires.
-
-The alignment check already treats AMOs correctly (`amo_is_rmw` in
-`control_unit.v`); driving `dmmu.req_write` with `ctl_mem_we | amo_is_rmw` (or an
-equivalent signal from the decoder) would fix all three points. Look at
-`RTL/core/riscv_core.v`, instance `dmmu`, and `RTL/core/MMU.v`, `access_allowed`
-and `pf_cause`.
-
-### The BIOS hands off without FENCE.I
-
-`boot_handoff` in `firmware/bios/boot.c` jumps to OpenSBI right after copying
-the boot set into SDRAM through the write-back data cache. Up to 4 KB of the
-most recently written data may still be dirty in the data cache, and
-instruction-cache misses read SDRAM directly. Today this is harmless in
-practice: the last file loaded is OpenSBI, and its tail is data, which is read
-through the (coherent) data cache. A `fence.i` before the jump would make the
-handoff correct regardless of file order or size.
+These behaviours are known and deliberate trade-offs or harmless quirks. None of
+them affects the Linux boot.
 
 ### Stale-operand page walks
 

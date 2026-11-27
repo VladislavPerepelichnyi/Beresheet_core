@@ -346,11 +346,16 @@ module riscv_core #(
     // pending fetch-fault trap is waiting for.
     wire dmem_op_d = (ctl_mem_re | ctl_mem_we) & ~ifetch_fault_d;
 
+    // An AMO decodes as a load (its first bus access is a read) but writes the
+    // page, so it is translated as a store: it needs W and D, and a fault is a
+    // store/AMO page fault (cause 15). LR is a plain load; SC already sets mem_we.
+    wire amo_write_d = is_atomic & (instruction_d[31:27] != `F5_LR);
+
     mmu #(.TLB_ENTRIES (DTLB_ENTRIES), .IS_FETCH (0)) dmmu (
         .clk (clk), .rst (rst),
         .vaddr        (alu_result_d),
         .req_valid    (dmem_op_d & valid_d),
-        .req_write    (ctl_mem_we),
+        .req_write    (ctl_mem_we | amo_write_d),
         .priv_mode    (priv),
         .mstatus_mpp  (mstatus_mpp),
         .mstatus_mprv (mstatus_mprv),
