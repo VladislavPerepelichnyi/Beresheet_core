@@ -1,5 +1,7 @@
 # Beresheet
 
+![Beresheet on a Tang Nano 20K, running top under Linux on its serial console](doc/images/beresheet-board.png)
+
 Beresheet is a RISC-V processor and system-on-chip written from scratch in Verilog. It runs on
 a Sipeed Tang Nano 20K FPGA board and boots **Linux 6.9** through **OpenSBI** to an interactive
 **BusyBox** shell, on the board and in simulation.
@@ -27,6 +29,11 @@ the machine from the top-level architecture down to the RTL.
 | Peripherals | CLINT, PLIC, UART 16550, SD card (SPI), LED PWM, 8 MB SDRAM controller |
 | Board | Tang Nano 20K (Gowin GW2AR-18), 24 MHz, about 60% of the logic |
 
+![The Beresheet SoC: the core with its MMU and caches, the Wishbone bus, and the peripherals](doc/arch/core/figures/soc-block-diagram.svg)
+
+The core has one instruction port and one data port; the caches, bus and devices around it
+are the SoC. [Chapter 0](doc/arch/core/00-overview.md) of the book walks through the diagram.
+
 ## Repository layout
 
 ```
@@ -46,6 +53,7 @@ software/          bare-metal SDK (crt0, linker scripts) and examples
 scripts/           image conversion, boot-map check, SD image, serial console
 mk/                Makefile fragments; mk/boards/ holds one file per FPGA board
 doc/arch/          the book: core, bus, peripherals
+doc/images/        pictures used by this README
 ```
 
 Everything generated goes to `build/`. The `schematics/` directory is the working area for
